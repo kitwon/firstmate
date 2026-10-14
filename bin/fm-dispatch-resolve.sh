@@ -52,7 +52,8 @@
 #   rule's declared `min_confidence` on that rule's probability, falling to the
 #   most probable other option that clears its own floor), the rule's declared
 #   `approval` and `floor`, each profile's declared `provider` and `floor`, the
-#   quota rows from ONE quota-axi --json snapshot (schema 5 or 6; each
+#   quota rows from ONE snapshot (schema 5 or 6; provider=magpie reads
+#   `magpie quota --json`, every other provider reads quota-axi --json; each
 #   candidate binds to one row through quota_row in
 #   bin/fm-quota-axi-lib.sh, so a Pi lane such as openai-codex-work/...
 #   reads its own account's row and an expanded provider with no row for the
@@ -556,17 +557,34 @@ jq -e --slurpfile rules "$RULES" '
        (.usage.output_tokens | type) == "number"))' \
   "$RESP_FILE" >/dev/null 2>&1 || emit_error "response is not a rule Choice answer"
 
-# ---- quota evidence: one quota-axi --json snapshot, skipped entirely under the
-# ---- shared-quota opt-out (a stub keeps the slurpfile contract intact) ---------
+# ---- quota evidence: one snapshot, except under shared-quota opt-out -------------
 SQ=false
 SHARED_QUOTA=$(jq -r '.shared_quota // false' "$RULES" 2>/dev/null) || SHARED_QUOTA=false
 if [ "$SHARED_QUOTA" = true ]; then
   printf '{"providers":[]}\n' > "$QUOTA"
   SQ=true
 else
-  command -v quota-axi >/dev/null 2>&1 || emit_error "quota-axi not installed"
-  quota-axi --json > "$QUOTA" 2>/dev/null || emit_error "quota-axi --json failed"
-  fm_quota_json_valid < "$QUOTA" || emit_error "quota-axi --json returned an invalid snapshot"
+  # provider=magpie is read by bin/fm-magpie-quota.sh, which owns the Magpie
+  # window list and emits the schema-6 snapshot this join already accepts.
+  # Other providers use one quota-axi snapshot; native rows never stand in for gateway accounts.
+  uses_magpie=0
+  jq -e '
+    def profiles($v): if ($v | type) == "array" then $v elif ($v | type) == "object" then [$v] else [] end;
+    any(([(.rules // [])[] | profiles(.use)[]] + profiles(.default // null))[]; .provider == "magpie")
+  ' "$RULES" >/dev/null 2>&1 && uses_magpie=1
+  if [ "$uses_magpie" -eq 1 ]; then
+    # FM_MAGPIE_QUOTA names a substitute reader for tests. Unset in production.
+    magpie_reader=${FM_MAGPIE_QUOTA:-$SCRIPT_DIR/fm-magpie-quota.sh}
+    if "$magpie_reader" --read > "$QUOTA" 2>/dev/null; then
+      fm_quota_json_valid < "$QUOTA" || emit_error "magpie quota --json returned an invalid snapshot"
+    else
+      emit_error "magpie quota --json failed"
+    fi
+  else
+    command -v quota-axi >/dev/null 2>&1 || emit_error "quota-axi not installed"
+    quota-axi --json > "$QUOTA" 2>/dev/null || emit_error "quota-axi --json failed"
+    fm_quota_json_valid < "$QUOTA" || emit_error "quota-axi --json returned an invalid snapshot"
+  fi
 fi
 
 # ---- resolution: declared gates + quota evidence + argmax, all in jq ------------
@@ -578,7 +596,24 @@ RESULT=$(jq -n --arg floor "$CONFIDENCE_FLOOR" --argjson lat "$LAT_MS" --arg non
   def rows($p; $lane): (prov($p; $lane) | .quotaSemantics.effectiveAvailability // []);
   def bare($m): ($m | split("/") | last);
   def provider_of($c): ($c.provider // $pmap[$c.harness] // null);
-  def lane_of($c): quota_lane($c.harness; $c.model);
+  def magpie_family($m):
+    ($m | split("/") | first) as $prefix |
+    if $prefix == "cx" or $prefix == "codex" then "codex"
+    elif $prefix == "gcli" or $prefix == "grok" then "grok"
+    elif $prefix == "ocg" or $prefix == "opencode-go" then "opencode-go"
+    else "" end;
+  # One gateway account is one row (codex-1, codex-2). A model prefix names the
+  # family, not one login. The candidate binds to the fullest known account in
+  # that family; an unknown sibling never hides it and never gets summed in.
+  def lane_of($c):
+    if $c.provider == "magpie" then
+      (magpie_family($c.model // "")) as $family |
+      ([$q.providers[]?
+        | select(.provider == "magpie" and (.accountKey | startswith($family + "-"))
+                 and .quotaSemantics.status == "known")]
+        | sort_by(-([.quotaSemantics.effectiveAvailability[]?
+                    | .effectivePercentRemaining // -1] | min)) | first | .accountKey) // ""
+    else quota_lane($c.harness; $c.model) end;
   def measured($p; $lane):
     (prov($p; $lane) != null and (["known", "partial"] | index(prov($p; $lane).quotaSemantics.status)) != null);
   def applicable($p; $lane; $m):
