@@ -10,13 +10,15 @@
 # Magpie already holds (magpie quota --help). It is not quota reset, credits,
 # auto-reset, accounts refresh, or accounts add.
 #
-# Output is one schema-6 snapshot the existing quota join already accepts:
-# provider magpie, one row per subscription in list order (codex-1, codex-2).
-# The login is not the key and is not copied. Percentages are not summed
-# across accounts. A row with an error or no windows is unknown. Remaining
-# percent is that account's tightest window. Magpie does not publish
-# spendPriority; the scalar is the mean remaining fraction, and only when
-# every window is above zero. It is headroom, not pace.
+# Output is one schema-6 snapshot the existing quota join already accepts,
+# with a single unknown magpie row keyed `unattributed`. `magpie quota --json`
+# on magpie 0.1.1230 names each subscription by `provider` and `user` and
+# gives windows, but no stable account id and no field saying which
+# subscription served a model. List order is not an id. The login is not
+# copied and is not hashed into a key. Magpie does not publish spendPriority,
+# so none is invented from remaining percent. Until a route names the
+# account, every magpie profile is unknown and unranked. A native quota-axi
+# row is not one of these accounts.
 #
 # This script does not source or change bin/fm-quota-axi-lib.sh. quota-axi
 # stays the reader for every provider that is not magpie.
@@ -35,42 +37,15 @@ usage() {
 # jq program. Stdin is the raw Magpie array.
 # shellcheck disable=SC2016 # jq program text, not shell expansion
 normalize='
-  def window_known:
-    (.used | type) == "number" and (.remaining | type) == "number" and
-    .remaining >= 0 and .remaining <= 100 and .used >= 0;
   def family_id($p):
     ($p | type) == "string" and ($p | test("^[a-z0-9]+(-[a-z0-9]+)*$"));
-  def one($entry; $family; $index):
-    ([($entry.windows // [])[] | select(window_known)]) as $known |
-    (if ($entry.error | type) == "string" and ($entry.error | length) > 0 then true else false end) as $errored |
-    {provider: "magpie", accountKey: ($family + "-" + ($index | tostring)),
-     quotaSemantics: (
-       if ($known | length) == 0 then
-         {status: "unknown", effectiveAvailability: [
-           {scope: "all_models", status: "unknown", runway: {status: "unknown"}}]}
-       else
-         ($known | min_by(.remaining)) as $tight |
-         {status: "known",
-          effectiveAvailability: [{
-            scope: "all_models",
-            status: "known",
-            effectivePercentRemaining: $tight.remaining,
-            runway: {status: (if $tight.remaining <= 0 then "exhausted_now" else "through_reset" end)},
-            selection: (
-              if $errored or any($known[]; .remaining <= 0) then {}
-              else {spendPriority: (($known | map(.remaining) | add) / (($known | length) * 100))}
-              end)
-          }]}
-       end)};
   if type != "array" then error("magpie quota is not an array") else . end |
-  reduce .[] as $entry ({n: {}, rows: []};
-    ($entry.provider // "") as $family |
-    if family_id($family) | not then .
-    else .n[$family] = ((.n[$family] // 0) + 1) |
-         .rows += [one($entry; $family; .n[$family])]
-    end) |
-  if (.rows | length) == 0 then error("magpie quota has no provider rows") else . end |
-  {schemaVersion: 6, providers: .rows}
+  [ .[] | select(family_id(.provider // "")) ] as $rows |
+  if ($rows | length) == 0 then error("magpie quota has no provider rows") else . end |
+  {schemaVersion: 6, providers: [
+    {provider: "magpie", accountKey: "unattributed",
+     quotaSemantics: {status: "unknown", effectiveAvailability: [
+       {scope: "all_models", status: "unknown", runway: {status: "unknown"}}]}}]}
 '
 
 read_raw=0
