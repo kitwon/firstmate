@@ -1843,11 +1843,12 @@ assert_contains "$out" 'spendPriority=' "shared_quota false prints quota evidenc
 pass "shared_quota false keeps the unchanged quota-ranked behavior"
 cp "$BASE_RULES" "$RULES"
 # --- provider=magpie reads magpie quota, not quota-axi ------------------------
-# Legacy cx/ gcli/ ocg/ prefixes bind to the same upstream accounts as
-# codex/ grok/ opencode-go/. An errored account stays unknown. A zero window
-# is ineligible. Native quota-axi is not consulted.
+# Magpie names subscriptions but not which one served a model, and it
+# publishes no spendPriority. A full sibling must not rank a profile, list
+# order must not change the verdict, and the login must not appear.
 MAGPIE_RULES="$TMP_ROOT/magpie-rules.json"
 MAGPIE_RAW="$TMP_ROOT/magpie-raw.json"
+MAGPIE_REORDERED="$TMP_ROOT/magpie-reordered.json"
 cat > "$MAGPIE_RULES" <<'JSON'
 {
   "rules": [
@@ -1858,7 +1859,8 @@ cat > "$MAGPIE_RULES" <<'JSON'
         { "harness": "pi", "model": "codex/gpt-6-luna", "provider": "magpie", "effort": "xhigh" },
         { "harness": "pi", "model": "gcli/grok-4.7", "provider": "magpie", "effort": "high" },
         { "harness": "pi", "model": "ocg/deepseek-v4.1-flash", "provider": "magpie", "effort": "xhigh" },
-        { "harness": "pi", "model": "opencode-go/glm-5.3-flash", "provider": "magpie", "effort": "medium" }
+        { "harness": "pi", "model": "opencode-go/glm-5.3-flash", "provider": "magpie", "effort": "medium" },
+        { "harness": "pi", "model": "openai-codex-work/gpt-5.6-terra", "provider": "magpie", "effort": "high" }
       ]
     }
   ]
@@ -1868,14 +1870,15 @@ cat > "$MAGPIE_RAW" <<'JSON'
 [
   {"provider":"codex","user":"one@example","windows":[],"error":"Unauthorized"},
   {"provider":"codex","user":"two@example","windows":[{"name":"5 hours","used":20,"remaining":80}],"readAt":"2030-01-01T00:00:00Z"},
-  {"provider":"grok","windows":[{"name":"7 days","used":100,"remaining":0,"resetsAt":"2030-01-02T00:00:00Z"}],"readAt":"2030-01-01T00:00:00Z"},
-  {"provider":"opencode-go","windows":[
+  {"provider":"grok","user":"grok@example","windows":[{"name":"7 days","used":100,"remaining":0,"resetsAt":"2030-01-02T00:00:00Z"}],"readAt":"2030-01-01T00:00:00Z"},
+  {"provider":"opencode-go","user":"go@example","windows":[
     {"name":"5 hours","used":10,"remaining":90},
     {"name":"7 days","used":40,"remaining":60,"resetsAt":"2030-01-08T00:00:00Z"}
   ],"readAt":"2030-01-01T00:00:00Z"},
-  {"provider":"mystery account","windows":[{"remaining":99,"used":1}]}
+  {"provider":"mystery account","user":"nope@example","windows":[{"remaining":99,"used":1}]}
 ]
 JSON
+jq 'reverse' "$MAGPIE_RAW" > "$MAGPIE_REORDERED"
 cat > "$FAKEBIN/magpie" <<'SH'
 #!/usr/bin/env bash
 set -u
@@ -1892,7 +1895,7 @@ printf '%s\n' "$*" >> "${MAGPIE_ADAPTER_CALLS:?}"
 exec "${FM_MAGPIE_QUOTA_REAL:?}" "$@"
 SH
 chmod +x "$TMP_ROOT/magpie-reader.sh"
-export FM_MAGPIE_QUOTA_REAL="$ROOT/bin/fm-magpie-quota.sh" FM_MAGPIE_QUOTA="$TMP_ROOT/magpie-reader.sh" MAGPIE_ADAPTER_CALLS="$LOG/magpie-adapter.calls"
+export FM_MAGPIE_QUOTA_REAL="$ROOT/bin/fm-magpie-quota.sh" FM_MAGPIE_QUOTA="$TMP_ROOT/magpie-reader.sh"
 export MAGPIE_CALLS="$LOG/magpie.calls" MAGPIE_FIXTURE="$MAGPIE_RAW" MAGPIE_ADAPTER_CALLS="$LOG/magpie-adapter.calls"
 cp "$MAGPIE_RULES" "$RULES"
 reset_log
@@ -1905,26 +1908,23 @@ cat > "$RESPONSE" <<'JSON'
 JSON
 TYPESAFE_API_KEY=$KEY run code out err "$BRIEF"
 expect_code 0 "$code" "magpie snapshot exits 0"
-assert_contains "$out" '  status: escalate' "two models on one account share one window and tie"
-assert_contains "$out" 'candidate: pi:cx/gpt-6.1-sol  provider=magpie  scope=all_models  remaining=80%  spendPriority=0.8  runway=through_reset  -> eligible' "an errored sibling does not hide the healthy Codex account"
-assert_contains "$out" 'candidate: pi:codex/gpt-6-luna  provider=magpie  scope=all_models  remaining=80%  spendPriority=0.8  runway=through_reset  -> eligible' "codex/ uses the same fullest account as cx/"
+assert_contains "$out" '  status: escalate' "unattributed magpie quota does not pick a profile"
+assert_contains "$out" '  reason: no rankable eligible candidate' "missing spendPriority and missing account attribution stay unranked"
+for model in cx/gpt-6.1-sol codex/gpt-6-luna gcli/grok-4.7 ocg/deepseek-v4.1-flash opencode-go/glm-5.3-flash openai-codex-work/gpt-5.6-terra; do
+  assert_contains "$out" "candidate: pi:${model}  provider=magpie  scope=all_models  remaining=-%  spendPriority=-  runway=unknown  -> eligible, unranked: provider magpie unmeasured (unknown): disclosed uncertainty" "full or empty windows do not rank ${model}"
+done
+assert_absent "$out" 'spendPriority=0.8' "remaining percent is not emitted as spendPriority"
 assert_absent "$out" 'one@example' "the account login is not copied into the decision"
 assert_absent "$out" 'two@example' "the second account login is not copied into the decision"
-assert_contains "$out" 'candidate: pi:gcli/grok-4.7  provider=magpie  scope=all_models  remaining=0%  spendPriority=-  runway=exhausted_now  -> not eligible: runway exhausted_now at all_models' "a zero window is ineligible"
-assert_contains "$out" 'candidate: pi:ocg/deepseek-v4.1-flash  provider=magpie  scope=all_models  remaining=60%  spendPriority=0.75  runway=through_reset  -> eligible' "legacy ocg/ binds to opencode-go"
-assert_contains "$out" 'candidate: pi:opencode-go/glm-5.3-flash  provider=magpie  scope=all_models  remaining=60%  spendPriority=0.75  runway=through_reset  -> eligible' "opencode-go/ binds to the same account"
-assert_contains "$out" '  reason: genuine spendPriority tie' "the shared-account tie is named, not broken by list order"
-# Drop the twin Codex model. The remaining Codex account then outranks OpenCode Go.
-jq 'del(.rules[0].use[1])' "$MAGPIE_RULES" > "$RULES"
-reset_log
-export MAGPIE_CALLS="$LOG/magpie.calls" MAGPIE_FIXTURE="$MAGPIE_RAW"
-TYPESAFE_API_KEY=$KEY run code out err "$BRIEF"
-assert_contains "$out" '  status: clear' "one model on the fuller account resolves"
-assert_contains "$out" "  profile: --harness 'pi' --model 'cx/gpt-6.1-sol' --effort 'high'" "the fuller Codex account outranks the tighter OpenCode Go windows"
 assert_equals 'quota --json' "$(cat "$LOG/magpie.calls")" "magpie quota --json is the read"
 assert_equals '--read' "$(cat "$LOG/magpie-adapter.calls")" "dispatch calls the magpie adapter, not quota-axi"
 [ ! -e "$LOG/quota-axi.calls" ] || fail "magpie provider must not call quota-axi"
 git -C "$ROOT" diff --exit-code -- bin/fm-quota-axi-lib.sh || fail "magpie dispatch must not change the quota-axi library"
+reset_log
+export MAGPIE_CALLS="$LOG/magpie.calls" MAGPIE_FIXTURE="$MAGPIE_REORDERED" MAGPIE_ADAPTER_CALLS="$LOG/magpie-adapter.calls"
+TYPESAFE_API_KEY=$KEY run code out err "$BRIEF"
+assert_contains "$out" '  status: escalate' "reordering subscriptions does not create a rankable account"
+assert_contains "$out" 'candidate: pi:cx/gpt-6.1-sol  provider=magpie  scope=all_models  remaining=-%  spendPriority=-  runway=unknown  -> eligible, unranked: provider magpie unmeasured (unknown): disclosed uncertainty' "a reordered full sibling still does not authorize the profile"
 reset_log
 export MAGPIE_CALLS="$LOG/magpie.calls" MAGPIE_FIXTURE="$MAGPIE_RAW" FAKE_MAGPIE_FAIL=1
 TYPESAFE_API_KEY=$KEY run code out err "$BRIEF"
@@ -1942,6 +1942,6 @@ write_response "$RESPONSE" rule_4 0.9
 TYPESAFE_API_KEY=$KEY run code out err "$BRIEF"
 assert_equals '--json' "$(cat "$LOG/quota-axi.calls")" "a file without provider magpie still reads quota-axi"
 [ ! -e "$LOG/magpie.calls" ] || fail "quota-axi profiles must not call magpie"
-pass "provider magpie uses magpie quota per upstream account and leaves quota-axi profiles alone"
+pass "provider magpie stays unattributed and leaves quota-axi profiles alone"
 
 printf '# all fm-dispatch-resolve tests passed\n'

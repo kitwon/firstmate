@@ -596,23 +596,11 @@ RESULT=$(jq -n --arg floor "$CONFIDENCE_FLOOR" --argjson lat "$LAT_MS" --arg non
   def rows($p; $lane): (prov($p; $lane) | .quotaSemantics.effectiveAvailability // []);
   def bare($m): ($m | split("/") | last);
   def provider_of($c): ($c.provider // $pmap[$c.harness] // null);
-  def magpie_family($m):
-    ($m | split("/") | first) as $prefix |
-    if $prefix == "cx" or $prefix == "codex" then "codex"
-    elif $prefix == "gcli" or $prefix == "grok" then "grok"
-    elif $prefix == "ocg" or $prefix == "opencode-go" then "opencode-go"
-    else "" end;
-  # One gateway account is one row (codex-1, codex-2). A model prefix names the
-  # family, not one login. The candidate binds to the fullest known account in
-  # that family; an unknown sibling never hides it and never gets summed in.
+  # Magpie names subscriptions but not which one served a model, so a profile
+  # binds to the single unattributed row and stays unranked. A fuller sibling
+  # never authorizes another account.
   def lane_of($c):
-    if $c.provider == "magpie" then
-      (magpie_family($c.model // "")) as $family |
-      ([$q.providers[]?
-        | select(.provider == "magpie" and (.accountKey | startswith($family + "-"))
-                 and .quotaSemantics.status == "known")]
-        | sort_by(-([.quotaSemantics.effectiveAvailability[]?
-                    | .effectivePercentRemaining // -1] | min)) | first | .accountKey) // ""
+    if $c.provider == "magpie" then "unattributed"
     else quota_lane($c.harness; $c.model) end;
   def measured($p; $lane):
     (prov($p; $lane) != null and (["known", "partial"] | index(prov($p; $lane).quotaSemantics.status)) != null);
