@@ -79,10 +79,14 @@ A provider-level or `all_models`/`all_products` scope bounds every model you est
 A named-model or named-product scope is an additional bound for that model alone.
 Match the candidate to its `quota[]` row by that established provider, its `accountKey` when the snapshot is schema 6 (a Pi lane's auth provider id such as `openai-codex-work`, or `codex-home` for native Codex including Pi's `codex-native/` adapter, then the `default` row, else unmeasured; never a row picked by position, never rows summed across accounts), and scope; a stale, auth-required, or unmeasurable scope is named in `attention[]` instead of a fabricated number.
 A profile whose provider is `magpie` is not a quota-axi family: read its evidence with `bin/fm-magpie-quota.sh --read` (the helper's header owns output and diagnostic handling).
-Inspect `providers[0].subscriptions` for separate subscription windows, resets, freshness, balances, and read errors; an unknown routing verdict does not mean the quota read failed.
-Magpie's `last` and `lastServedAt` describe recent gateway use, not stable model-to-account attribution.
-Magpie names subscriptions but not which one will serve the model, and it publishes no spendPriority, so the profile stays unknown and unranked.
-Do not treat remaining percent as spendPriority, and do not let a fuller subscription authorize a different one.
+Magpie names the subscription provider inside the model, so a route identifies its provider as `magpie/<provider>/<model>`, and a profile that declares `provider: magpie` may also spell the model `<provider>/<model>`.
+Match that exact provider to the snapshot's row of the same name and never to a similarly named sibling, a different account, or a native quota-axi row.
+Provider identification and account identification are separate facts.
+One subscription under that provider is that route's real windows.
+A provider Magpie reports more than once names separate accounts that no route field distinguishes, so that provider stays unmeasured with its `note` saying why, and every subscription stays in `providers[].subscriptions` beside its own windows, resets, freshness, balance, and read error.
+Inspect those subscriptions rather than one merged figure, and remember an unknown routing verdict is not a failed quota read.
+Magpie's `last` and `lastServedAt` describe recent gateway use, never which subscription served a request.
+Magpie publishes no spendPriority, so a route with real windows is unranked rather than unknown: an exhausted applicable window blocks it, and remaining percent neither ranks it nor lets a fuller sibling authorize a different route.
 A native quota-axi row is not that account's allowance.
 
 A candidate authenticates through its own tuple's surface; another harness's CLI can never gate it, and `harness=pi` with `model=xai/grok-*` is Pi using xAI rather than the standalone Grok CLI.

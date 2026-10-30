@@ -1928,7 +1928,7 @@ After the answer, code applies all remaining checks and ranking:
 
 - The confidence floor and the matched rule's `approval` and `floor`.
 - Each candidate's `provider` and `floor`.
-- Every applicable account-wide and model/product row from one `quota-axi --json` snapshot.
+- Every applicable account-wide and model/product row from one quota snapshot: `quota-axi --json` for a native provider, and `magpie quota --json` through `bin/fm-magpie-quota.sh` for a `provider: magpie` route.
 - The optional `preferred_provider` restriction under the [profile-array procedure](../.agents/skills/quota-array-dispatch/SKILL.md#rank-by-spendpriority).
 - The numeric `spendPriority` argmax within that candidate pool, using each candidate's limiting row.
 - With the home's `shared_quota: true` declaration ("Crew dispatch profiles"), the quota snapshot, floors, runway gates, and `spendPriority` argmax are skipped entirely; resolution is the matched rule's declared profile order (`preferred_provider` still narrows the pool; declared order then picks within it).
@@ -1938,6 +1938,8 @@ If preferred candidates remain eligible but none is rankable, it escalates inste
 It never introduces candidates outside the matched rule or its existing default fallback.
 
 The [shared quota library](../bin/fm-quota-axi-lib.sh) accepts schema 5 and schema 6 and implements the [account-matching contract](../.agents/skills/quota-array-dispatch/SKILL.md#1-eligibility).
+
+A `provider: magpie` profile names its Magpie subscription provider inside the model, as `magpie/<provider>/<model>`, or as `<provider>/<model>` when the profile already declares `provider: magpie`; that exact provider supplies the route's windows, and a provider Magpie reports more than once stays unmeasured instead of borrowing a sibling's windows.
 
 - An expanded provider with no matching account row leaves the candidate eligible but unranked.
 - Known applicable rows from a provider with partial quota semantics remain rankable; rows whose own status is not known remain unrankable.

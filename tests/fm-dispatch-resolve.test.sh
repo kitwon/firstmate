@@ -1843,9 +1843,11 @@ assert_contains "$out" 'spendPriority=' "shared_quota false prints quota evidenc
 pass "shared_quota false keeps the unchanged quota-ranked behavior"
 cp "$BASE_RULES" "$RULES"
 # --- provider=magpie reads magpie quota, not quota-axi ------------------------
-# Magpie names subscriptions but not which one served a model, and it
-# publishes no spendPriority. A full sibling must not rank a profile, list
-# order must not change the verdict, and the login must not appear.
+# A Magpie route names its own subscription provider: magpie/<provider>/<model>,
+# or <provider>/<model> on a profile that declares provider magpie. That
+# provider's row is the route's real evidence; a sibling provider never stands
+# in for it, a provider Magpie reports twice identifies no single account, and
+# Magpie publishes no spendPriority so nothing is ranked from a percentage.
 MAGPIE_RULES="$TMP_ROOT/magpie-rules.json"
 MAGPIE_RAW="$TMP_ROOT/magpie-raw.json"
 MAGPIE_REORDERED="$TMP_ROOT/magpie-reordered.json"
@@ -1855,12 +1857,13 @@ cat > "$MAGPIE_RULES" <<'JSON'
     {
       "when": "Router work.",
       "use": [
-        { "harness": "pi", "model": "cx/gpt-6.1-sol", "provider": "magpie", "effort": "high" },
-        { "harness": "pi", "model": "codex/gpt-6-luna", "provider": "magpie", "effort": "xhigh" },
-        { "harness": "pi", "model": "gcli/grok-4.7", "provider": "magpie", "effort": "high" },
-        { "harness": "pi", "model": "ocg/deepseek-v4.1-flash", "provider": "magpie", "effort": "xhigh" },
-        { "harness": "pi", "model": "opencode-go/glm-5.3-flash", "provider": "magpie", "effort": "medium" },
-        { "harness": "pi", "model": "openai-codex-work/gpt-5.6-terra", "provider": "magpie", "effort": "high" }
+        { "harness": "pi", "model": "magpie/opencode-go/glm-5.3-flash", "provider": "magpie", "effort": "medium" },
+        { "harness": "pi", "model": "opencode-go/glm-5.3-pro", "provider": "magpie", "effort": "medium" },
+        { "harness": "pi", "model": "magpie/grok/grok-4.7", "provider": "magpie", "effort": "high" },
+        { "harness": "pi", "model": "magpie/codex/gpt-6-luna", "provider": "magpie", "effort": "xhigh" },
+        { "harness": "pi", "model": "magpie/ocg/deepseek-v4.1-flash", "provider": "magpie", "effort": "high" },
+        { "harness": "pi", "model": "magpie/deepseek/deepseek-v4.1-flash", "provider": "magpie", "effort": "medium" },
+        { "harness": "pi", "model": "magpie/gpt-6", "provider": "magpie", "effort": "low" }
       ]
     }
   ]
@@ -1868,6 +1871,7 @@ cat > "$MAGPIE_RULES" <<'JSON'
 JSON
 cat > "$MAGPIE_RAW" <<'JSON'
 [
+  {"provider":"claude","user":"c@example","windows":[{"name":"5 hours","used":100,"remaining":0}]},
   {"provider":"codex","user":"one@example","windows":[],"error":"Unauthorized"},
   {"provider":"codex","user":"two@example","windows":[{"name":"5 hours","used":20,"remaining":80}],"readAt":"2030-01-01T00:00:00Z"},
   {"provider":"grok","user":"grok@example","windows":[{"name":"7 days","used":100,"remaining":0,"resetsAt":"2030-01-02T00:00:00Z"}],"readAt":"2030-01-01T00:00:00Z"},
@@ -1875,6 +1879,7 @@ cat > "$MAGPIE_RAW" <<'JSON'
     {"name":"5 hours","used":10,"remaining":90},
     {"name":"7 days","used":40,"remaining":60,"resetsAt":"2030-01-08T00:00:00Z"}
   ],"readAt":"2030-01-01T00:00:00Z"},
+  {"provider":"deepseek","kind":"balance","user":"bal@example","balance":"¥15.86","windows":[]},
   {"provider":"mystery account","user":"nope@example","windows":[{"remaining":99,"used":1}]}
 ]
 JSON
@@ -1883,7 +1888,11 @@ cat > "$FAKEBIN/magpie" <<'SH'
 #!/usr/bin/env bash
 set -u
 printf '%s\n' "$*" >> "${MAGPIE_CALLS:?}"
-[ "${FAKE_MAGPIE_FAIL:-0}" = 1 ] && exit 1
+if [ "${FAKE_MAGPIE_FAIL:-0}" = 1 ]; then
+  printf '%s\n' 'quota read failed for someone@example.com' >&2
+  exit 1
+fi
+printf '%s\n' 'quota diagnostic' >&2
 [ "${1:-}" = quota ] && [ "${2:-}" = --json ] || exit 2
 cat "${MAGPIE_FIXTURE:?}"
 SH
@@ -1908,31 +1917,105 @@ cat > "$RESPONSE" <<'JSON'
 JSON
 TYPESAFE_API_KEY=$KEY run code out err "$BRIEF"
 expect_code 0 "$code" "magpie snapshot exits 0"
-assert_contains "$out" '  status: escalate' "unattributed magpie quota does not pick a profile"
-assert_contains "$out" '  reason: no rankable eligible candidate' "missing spendPriority and missing account attribution stay unranked"
-for model in cx/gpt-6.1-sol codex/gpt-6-luna gcli/grok-4.7 ocg/deepseek-v4.1-flash opencode-go/glm-5.3-flash openai-codex-work/gpt-5.6-terra; do
-  assert_contains "$out" "candidate: pi:${model}  provider=magpie  scope=all_models  remaining=-%  spendPriority=-  runway=unknown  -> eligible, unranked: provider magpie unmeasured (unknown): disclosed uncertainty" "full or empty windows do not rank ${model}"
-done
-assert_absent "$out" 'spendPriority=0.8' "remaining percent is not emitted as spendPriority"
-assert_absent "$out" 'one@example' "the account login is not copied into the decision"
-assert_absent "$out" 'two@example' "the second account login is not copied into the decision"
-assert_equals 'quota --json' "$(cat "$LOG/magpie.calls")" "magpie quota --json is the read"
+assert_contains "$out" '  status: escalate' "no spendPriority leaves every eligible magpie route unranked"
+assert_contains "$out" '  reason: no rankable eligible candidate' "a route without spendPriority never authorizes a dispatch"
+assert_contains "$out" 'candidate: pi:magpie/opencode-go/glm-5.3-flash  provider=magpie  scope=all_models  remaining=90%  spendPriority=-  runway=unknown  bounds=all_models[5 hours]:90%/unknown,all_models[7 days]:60%/unknown  -> eligible, unranked: magpie publishes no spendPriority at all_models (5 hours): not rankable: disclosed uncertainty' "the full route form supplies its own provider's real windows"
+assert_contains "$out" 'candidate: pi:opencode-go/glm-5.3-pro  provider=magpie  scope=all_models  remaining=90%' "the relative route form reads the same provider row"
+assert_contains "$out" 'candidate: pi:magpie/grok/grok-4.7  provider=magpie  scope=all_models  remaining=0%  spendPriority=-  runway=unknown  -> not eligible: 0% remaining at all_models (7 days)' "an exhausted applicable window blocks the route"
+assert_contains "$out" 'candidate: pi:magpie/codex/gpt-6-luna  provider=magpie  scope=all_models  remaining=-%  spendPriority=-  runway=unknown  -> eligible, unranked: provider magpie route codex unmeasured (unknown): 2 subscriptions named codex; magpie reports no stable account id: disclosed uncertainty' "two subscriptions under one provider identify no single account"
+assert_contains "$out" 'candidate: pi:magpie/ocg/deepseek-v4.1-flash  provider=magpie  -> eligible, unranked: provider magpie route ocg not in the quota snapshot: disclosed uncertainty' "a route reads its exact provider, never a sibling with a similar name"
+assert_not_contains "$out" 'candidate: pi:magpie/ocg/deepseek-v4.1-flash  provider=magpie  scope=' "a sibling row never becomes another route's evidence"
+assert_contains "$out" 'candidate: pi:magpie/deepseek/deepseek-v4.1-flash  provider=magpie  scope=all_models  remaining=-%  spendPriority=-  runway=unknown  -> eligible, unranked: provider magpie route deepseek unmeasured (unknown): subscription publishes no percentage window: disclosed uncertainty' "a balance-only provider stays unmeasured, not exhausted"
+assert_contains "$out" 'candidate: pi:magpie/gpt-6  provider=magpie  -> not eligible: magpie model magpie/gpt-6 names no provider; expected magpie/<provider>/<model>' "a route with no provider segment is a configuration finding, not an allow"
+assert_not_contains "$out" 'spendPriority=0.9' "remaining percent is never emitted as spendPriority"
+assert_not_contains "$out" 'one@example' "the account login is not copied into the decision"
+assert_not_contains "$out" 'two@example' "the second account login is not copied into the decision"
+assert_not_contains "$out" 'grok@example' "a healthy route does not copy its login either"
+assert_equals 'quota --json' "$(head -1 "$LOG/magpie.calls")" "magpie quota --json is the read"
+assert_contains "$err" 'quota diagnostic' "the reader's own diagnostic reaches the operator"
 assert_equals '--read' "$(cat "$LOG/magpie-adapter.calls")" "dispatch calls the magpie adapter, not quota-axi"
 [ ! -e "$LOG/quota-axi.calls" ] || fail "magpie provider must not call quota-axi"
 git -C "$ROOT" diff --exit-code -- bin/fm-quota-axi-lib.sh || fail "magpie dispatch must not change the quota-axi library"
+pass "a route reads its own provider's windows, blocks on exhaustion, and never ranks without spendPriority"
+
+# The shared-quota opt-out and a Magpie route read are both quota evidence, so the
+# opt-out still wins: a home declaring one shared budget reads no Magpie
+# subscription at all.
+jq '.shared_quota = true' "$MAGPIE_RULES" > "$RULES"
+reset_log
+export MAGPIE_CALLS="$LOG/magpie.calls" MAGPIE_FIXTURE="$MAGPIE_RAW" MAGPIE_ADAPTER_CALLS="$LOG/magpie-adapter.calls"
+TYPESAFE_API_KEY=$KEY run code out err "$BRIEF"
+assert_contains "$out" 'candidate: pi:magpie/opencode-go/glm-5.3-flash  provider=magpie  -> eligible (quota ranking off: home declares a single shared quota)' "shared_quota keeps every magpie route eligible in declared order"
+assert_contains "$out" "  profile: --harness 'pi' --model 'magpie/opencode-go/glm-5.3-flash' --effort 'medium'" "shared_quota picks the first declared magpie route"
+[ ! -e "$LOG/magpie.calls" ] || fail "shared_quota must read no magpie subscription"
+[ ! -e "$LOG/magpie-adapter.calls" ] || fail "shared_quota must not call the magpie adapter"
+pass "a shared-quota home reads no Magpie subscription and keeps declared order"
+cp "$MAGPIE_RULES" "$RULES"
+reset_log
+export MAGPIE_CALLS="$LOG/magpie.calls" MAGPIE_FIXTURE="$MAGPIE_REORDERED" MAGPIE_ADAPTER_CALLS="$LOG/magpie-adapter.calls"
+
 reset_log
 export MAGPIE_CALLS="$LOG/magpie.calls" MAGPIE_FIXTURE="$MAGPIE_REORDERED" MAGPIE_ADAPTER_CALLS="$LOG/magpie-adapter.calls"
 TYPESAFE_API_KEY=$KEY run code out err "$BRIEF"
-assert_contains "$out" '  status: escalate' "reordering subscriptions does not create a rankable account"
-assert_contains "$out" 'candidate: pi:cx/gpt-6.1-sol  provider=magpie  scope=all_models  remaining=-%  spendPriority=-  runway=unknown  -> eligible, unranked: provider magpie unmeasured (unknown): disclosed uncertainty' "a reordered full sibling still does not authorize the profile"
+assert_contains "$out" 'candidate: pi:magpie/opencode-go/glm-5.3-flash  provider=magpie  scope=all_models  remaining=90%  spendPriority=-  runway=unknown  bounds=all_models[5 hours]:90%/unknown,all_models[7 days]:60%/unknown' "reordering subscriptions changes nothing"
+assert_contains "$out" 'candidate: pi:magpie/grok/grok-4.7  provider=magpie  scope=all_models  remaining=0%  spendPriority=-  runway=unknown  -> not eligible: 0% remaining at all_models (7 days)' "a reordered duplicate provider does not become exhausted or healthy by position"
+pass "list order changes neither a route's windows nor its verdict"
+
+# A native profile must never read a Magpie subscription as its own allowance,
+# even when both appear in one rule and Magpie happens to name its provider.
+MAGPIE_MIXED="$TMP_ROOT/magpie-mixed.json"
+cat > "$MAGPIE_MIXED" <<'JSON'
+{
+  "rules": [
+    {
+      "when": "Router work.",
+      "use": [
+        { "harness": "claude", "model": "sonnet", "provider": "claude", "effort": "high" },
+        { "harness": "pi", "model": "magpie/opencode-go/glm-5.3-flash", "provider": "magpie", "effort": "medium" }
+      ]
+    }
+  ]
+}
+JSON
+cp "$MAGPIE_MIXED" "$RULES"
 reset_log
-export MAGPIE_CALLS="$LOG/magpie.calls" MAGPIE_FIXTURE="$MAGPIE_RAW" FAKE_MAGPIE_FAIL=1
+export MAGPIE_CALLS="$LOG/magpie.calls" MAGPIE_FIXTURE="$MAGPIE_RAW" MAGPIE_ADAPTER_CALLS="$LOG/magpie-adapter.calls"
+cat > "$RESPONSE" <<'JSON'
+{ "model": "jev-1.13.0",
+  "answers": { "rule": { "type": "choice", "choice": "rule_1", "confidence": 0.9,
+    "probabilities": { "rule_1": 0.97, "default": 0.03 } } },
+  "usage": { "input_tokens": 100, "output_tokens": 20 } }
+JSON
+TYPESAFE_API_KEY=$KEY run code out err "$BRIEF"
+assert_contains "$out" 'candidate: claude:sonnet  provider=claude  -> eligible, unranked: provider claude is not in this Magpie snapshot; a Magpie subscription is not a native allowance: disclosed uncertainty' "a native profile never reads a Magpie row named like its provider"
+assert_not_contains "$out" 'candidate: claude:sonnet  provider=claude  scope=' "a Magpie row never becomes a native profile's allowance"
+pass "a native profile and a Magpie route in one rule never share a quota row"
+
+reset_log
+export MAGPIE_CALLS="$LOG/magpie.calls" MAGPIE_FIXTURE="$MAGPIE_RAW" MAGPIE_ADAPTER_CALLS="$LOG/magpie-adapter.calls" FAKE_MAGPIE_FAIL=1
 TYPESAFE_API_KEY=$KEY run code out err "$BRIEF"
 unset FAKE_MAGPIE_FAIL
-assert_contains "$out" '  reason: magpie quota --json failed' "a magpie read failure is an error outcome"
+expect_code 0 "$code" "a failed magpie read is still an intake answer"
+assert_contains "$out" '  status: error' "a failed magpie read is an error outcome, not a healthy allowance"
+assert_contains "$out" '  reason: magpie quota --json failed: quota read failed for <redacted>' "a failed read reports its own diagnostic, redacted, in the reason"
+assert_not_contains "$out" 'someone@example.com' "the structured reason never carries an account login"
+assert_contains "$err" 'quota read failed for someone@example.com' "the raw diagnostic still reaches the operator on stderr"
+assert_not_contains "$out" 'provider=magpie' "a failed read never emits candidate evidence"
+pass "a failed read keeps its diagnostic visible without corrupting or leaking the snapshot"
+
+cat > "$TMP_ROOT/magpie-stub.sh" <<'SH'
+#!/usr/bin/env bash
+set -u
+printf '%s\n' '{"providers":[{"provider":"magpie"}]}'
+SH
+chmod +x "$TMP_ROOT/magpie-stub.sh"
+cp "$MAGPIE_RULES" "$RULES"
+reset_log
+FM_MAGPIE_QUOTA="$TMP_ROOT/magpie-stub.sh" TYPESAFE_API_KEY=$KEY run code out err "$BRIEF"
+assert_contains "$out" '  reason: magpie quota --json returned an invalid snapshot' "a snapshot the join cannot accept is an error outcome"
 printf '%s\n' 'not-json' > "$TMP_ROOT/magpie-bad.json"
 reset_log
-export MAGPIE_CALLS="$LOG/magpie.calls" MAGPIE_FIXTURE="$TMP_ROOT/magpie-bad.json"
+export MAGPIE_CALLS="$LOG/magpie.calls" MAGPIE_FIXTURE="$TMP_ROOT/magpie-bad.json" MAGPIE_ADAPTER_CALLS="$LOG/magpie-adapter.calls"
 TYPESAFE_API_KEY=$KEY run code out err "$BRIEF"
 assert_contains "$out" '  reason: magpie quota --json failed' "non-json magpie output fails the read"
 cp "$BASE_RULES" "$RULES"
@@ -1942,6 +2025,6 @@ write_response "$RESPONSE" rule_4 0.9
 TYPESAFE_API_KEY=$KEY run code out err "$BRIEF"
 assert_equals '--json' "$(cat "$LOG/quota-axi.calls")" "a file without provider magpie still reads quota-axi"
 [ ! -e "$LOG/magpie.calls" ] || fail "quota-axi profiles must not call magpie"
-pass "provider magpie stays unattributed and leaves quota-axi profiles alone"
+pass "provider magpie leaves native quota-axi dispatch untouched"
 
 printf '# all fm-dispatch-resolve tests passed\n'

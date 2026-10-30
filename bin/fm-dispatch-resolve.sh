@@ -57,8 +57,10 @@
 #   candidate binds to one row through quota_row in
 #   bin/fm-quota-axi-lib.sh, so a Pi lane such as openai-codex-work/...
 #   reads its own account's row and an expanded provider with no row for the
-#   candidate is unmeasured, never blocked), then the optional preferred_provider
-#   family restriction before spendPriority ranks the remaining candidates.
+#   candidate is unmeasured, never blocked; a Magpie route names its own
+#   subscription provider as magpie/<provider>/<model> and reads that row), then
+#   the optional preferred_provider family restriction before spendPriority
+#   ranks the remaining candidates.
 #   An eligible but wholly unrankable preferred family escalates rather than
 #   authorizing another family.
 #   The model never sees quota, catalogs, approvals, preferred_provider,
@@ -400,7 +402,8 @@ RESP_FILE=$(mktemp) || die "mktemp failed"
 QUOTA=$(mktemp) || { rm -f "$RESP_FILE"; die "mktemp failed"; }
 TASK_TEXT=$(mktemp) || { rm -f "$RESP_FILE" "$QUOTA"; die "mktemp failed"; }
 SEND_TEXT=$(mktemp) || { rm -f "$RESP_FILE" "$QUOTA" "$TASK_TEXT"; die "mktemp failed"; }
-trap 'rm -f "$RULES" "$RESP_FILE" "$QUOTA" "$TASK_TEXT" "$SEND_TEXT"' EXIT
+MAGPIE_ERR=''
+trap 'rm -f "$RULES" "$RESP_FILE" "$QUOTA" "$TASK_TEXT" "$SEND_TEXT" "$MAGPIE_ERR"' EXIT
 
 never_send_off() {
   echo "dispatch-resolve: off ($1; nothing sent)" >&2
@@ -557,113 +560,168 @@ jq -e --slurpfile rules "$RULES" '
        (.usage.output_tokens | type) == "number"))' \
   "$RESP_FILE" >/dev/null 2>&1 || emit_error "response is not a rule Choice answer"
 
-# ---- quota evidence: one snapshot, except under shared-quota opt-out -------------
+# ---- quota evidence: one snapshot, except under shared-quota opt-out ---------
+# provider=magpie is read by bin/fm-magpie-quota.sh, which owns the Magpie
+# window list and emits the schema-6 snapshot this join already accepts, one row
+# per Magpie subscription provider. A route names that provider as
+# magpie/<real provider>/<model>, so a route binds its own provider's windows and
+# never a sibling's or a native quota-axi allowance. Every other provider,
+# including a legacy 9router profile, keeps one quota-axi --json snapshot.
+# The reader's diagnostics stay on stderr: the snapshot on stdout stays valid
+# JSON, and the first diagnostic line also rides the structured reason of a
+# failed read after redaction, so a broken read is never silent. A home that
+# declares shared_quota makes no quota read at all.
 SQ=false
 SHARED_QUOTA=$(jq -r '.shared_quota // false' "$RULES" 2>/dev/null) || SHARED_QUOTA=false
+uses_magpie=0
+jq -e '
+  def profiles($v): if ($v | type) == "array" then $v elif ($v | type) == "object" then [$v] else [] end;
+  any(([(.rules // [])[] | profiles(.use)[]] + profiles(.default // null))[]; .provider == "magpie")
+' "$RULES" >/dev/null 2>&1 && uses_magpie=1
+magpie_diag() {
+  local line
+  [ -s "$MAGPIE_ERR" ] || return 0
+  line=$(awk 'NF { sub(/^[[:space:]]+/, ""); print; exit }' "$MAGPIE_ERR" 2>/dev/null) || return 0
+  [ -n "$line" ] || return 0
+  # Keep the actionable part of the message and drop anything shaped like an
+  # account login or a token, because this copy rides the structured output.
+  printf '%s' "${line:0:200}" | tr -s '[:space:]' ' ' |
+    sed -E 's/[[:alnum:]._%+-]+@[[:alnum:].-]+\.[[:alpha:]]{2,}/<redacted>/g; s/[[:alnum:]_-]{32,}/<redacted>/g' |
+    sed -E 's/ $//'
+}
+diag_note() {
+  local text
+  text=$(magpie_diag)
+  [ -n "$text" ] || return 0
+  printf ': %s' "$text"
+}
 if [ "$SHARED_QUOTA" = true ]; then
   printf '{"providers":[]}\n' > "$QUOTA"
   SQ=true
-else
-  # provider=magpie is read by bin/fm-magpie-quota.sh, which owns the Magpie
-  # window list and emits the schema-6 snapshot this join already accepts.
-  # Other providers use one quota-axi snapshot; native rows never stand in for gateway accounts.
-  uses_magpie=0
-  jq -e '
-    def profiles($v): if ($v | type) == "array" then $v elif ($v | type) == "object" then [$v] else [] end;
-    any(([(.rules // [])[] | profiles(.use)[]] + profiles(.default // null))[]; .provider == "magpie")
-  ' "$RULES" >/dev/null 2>&1 && uses_magpie=1
-  if [ "$uses_magpie" -eq 1 ]; then
-    # FM_MAGPIE_QUOTA names a substitute reader for tests. Unset in production.
-    magpie_reader=${FM_MAGPIE_QUOTA:-$SCRIPT_DIR/fm-magpie-quota.sh}
-    if "$magpie_reader" --read > "$QUOTA" 2>/dev/null; then
-      fm_quota_json_valid < "$QUOTA" || emit_error "magpie quota --json returned an invalid snapshot"
-    else
-      emit_error "magpie quota --json failed"
-    fi
+elif [ "$uses_magpie" -eq 1 ]; then
+  # FM_MAGPIE_QUOTA names a substitute reader for tests. Unset in production.
+  magpie_reader=${FM_MAGPIE_QUOTA:-$SCRIPT_DIR/fm-magpie-quota.sh}
+  MAGPIE_ERR=$(mktemp) || emit_error "mktemp failed"
+  if "$magpie_reader" --read > "$QUOTA" 2> "$MAGPIE_ERR"; then
+    # Replay the reader's own diagnostics on our stderr so a fresh read and a
+    # cached one never sound the same.
+    [ ! -s "$MAGPIE_ERR" ] || cat "$MAGPIE_ERR" >&2
+    fm_quota_json_valid < "$QUOTA" || emit_error "magpie quota --json returned an invalid snapshot$(diag_note)"
   else
-    command -v quota-axi >/dev/null 2>&1 || emit_error "quota-axi not installed"
-    quota-axi --json > "$QUOTA" 2>/dev/null || emit_error "quota-axi --json failed"
-    fm_quota_json_valid < "$QUOTA" || emit_error "quota-axi --json returned an invalid snapshot"
+    [ ! -s "$MAGPIE_ERR" ] || cat "$MAGPIE_ERR" >&2
+    emit_error "magpie quota --json failed$(diag_note)"
   fi
+else
+  command -v quota-axi >/dev/null 2>&1 || emit_error "quota-axi not installed"
+  quota-axi --json > "$QUOTA" 2>/dev/null || emit_error "quota-axi --json failed"
+  fm_quota_json_valid < "$QUOTA" || emit_error "quota-axi --json returned an invalid snapshot"
 fi
 
 # ---- resolution: declared gates + quota evidence + argmax, all in jq ------------
-RESULT=$(jq -n --arg floor "$CONFIDENCE_FLOOR" --argjson lat "$LAT_MS" --arg none_criterion "$DEFAULT_WHEN" --argjson pmap "$PMAP" --argjson sq "$SQ" \
+RESULT=$(jq -n --arg floor "$CONFIDENCE_FLOOR" --argjson lat "$LAT_MS" --arg none_criterion "$DEFAULT_WHEN" --argjson pmap "$PMAP" --argjson sq "$SQ" --argjson magpie "$uses_magpie" \
   --slurpfile resp "$RESP_FILE" --slurpfile rules "$RULES" --slurpfile quota "$QUOTA" "$FM_QUOTA_ROW_JQ"'
   ($resp[0]) as $r | ($rules[0]) as $cfg | ($quota[0]) as $q | ($r.answers.rule) as $a |
   def profiles($v): if ($v | type) == "array" then $v elif ($v | type) == "object" then [$v] else [] end;
-  def prov($p; $lane): quota_row($q; $p; $lane);
-  def rows($p; $lane): (prov($p; $lane) | .quotaSemantics.effectiveAvailability // []);
   def bare($m): ($m | split("/") | last);
   def provider_of($c): ($c.provider // $pmap[$c.harness] // null);
-  # Magpie names subscriptions but not which one served a model, so a profile
-  # binds to the single unattributed row and stays unranked. A fuller sibling
-  # never authorizes another account.
+  # A Magpie route names its subscription provider inside the model:
+  # magpie/<real provider>/<model>. A profile that declares provider magpie may
+  # also spell the model <real provider>/<model>, and spawn uses that full form.
+  def magpie_segs($c):
+    ($c.model // "") | split("/") | if .[0] == "magpie" then .[1:] else . end;
+  def magpie_route($c): (magpie_segs($c) | first) // "";
+  def magpie_route_ok($c):
+    (magpie_segs($c)) as $s |
+    ($s | length) >= 2 and ($s[0] | test("^[a-z0-9]+(-[a-z0-9]+)*$"));
+  def route_id($c):
+    if $c.provider == "magpie" then magpie_route($c) else (provider_of($c) // "") end;
+  def route_label($c):
+    if $c.provider == "magpie" then "provider magpie route \(route_id($c))"
+    else "provider \(provider_of($c))" end;
+  # A candidate reads the one snapshot this run took. A Magpie snapshot holds
+  # Magpie subscription providers, so only a provider=magpie profile binds a row
+  # from it: a native profile never treats a Magpie subscription as its own
+  # allowance, and the provider a route names never reads a sibling row.
+  def bindable($c): ($magpie == 1) == ($c.provider == "magpie");
+  # Magpie names no account for a route, so a route binds the provider row.
   def lane_of($c):
-    if $c.provider == "magpie" then "unattributed"
-    else quota_lane($c.harness; $c.model) end;
-  def measured($p; $lane):
-    (prov($p; $lane) != null and (["known", "partial"] | index(prov($p; $lane).quotaSemantics.status)) != null);
-  def applicable($p; $lane; $m):
-    (bare($m)) as $bare |
-    [rows($p; $lane)[] | select(
+    if $c.provider == "magpie" then "default" else quota_lane($c.harness; $c.model) end;
+  def prov($c):
+    if bindable($c) then quota_row($q; route_id($c); lane_of($c)) else null end;
+  def rows($c): (prov($c) | .quotaSemantics.effectiveAvailability // []);
+  def measured($c):
+    (prov($c) != null and (["known", "partial"] | index(prov($c).quotaSemantics.status)) != null);
+  def note_of($c): (prov($c).note // "");
+  def applicable($c):
+    (bare($c.model // "")) as $bare |
+    [rows($c)[] | select(
       .scope == "all_models" or .scope == "all_products" or
-      ($m != "" and (.scope == ("model:" + $bare) or .scope == ("product:" + $bare)))
+      ((($c.model // "") != "") and (.scope == ("model:" + $bare) or .scope == ("product:" + $bare)))
     )];
-  def floor_state($f; $p; $lane):
+  def floor_state($f; $c):
     if $f == null then "none"
-    elif prov($p; $lane) == null or (measured($p; $lane) | not) then "unknown"
-    else [rows($p; $lane)[] | select(.scope == $f.scope)] as $matches
+    elif prov($c) == null or (measured($c) | not) then "unknown"
+    else [rows($c)[] | select(.scope == $f.scope)] as $matches
       | if ($matches | length) == 0 or any($matches[]; .status != "known") then "unknown"
         elif any($matches[]; .effectivePercentRemaining < $f.min_percent) then "below"
         else "ok"
         end
     end;
+  # The window name is the label Magpie gives the bound it sets, which keeps
+  # two all_models windows apart in the evidence we print.
   def evidence($rows):
-    $rows | map({scope, status, pct: (.effectivePercentRemaining // null), runway: (.runway.status // null), spendPriority: (.selection.spendPriority // null)});
+    $rows | map({scope, window, status, pct: (.effectivePercentRemaining // null), runway: (.runway.status // null), spendPriority: (.selection.spendPriority // null)});
+  def at($row):
+    "\($row.scope)" + (if ($row.window // "") != "" then " (\($row.window))" else "" end);
   def evaluate($c):
-    (provider_of($c)) as $p | (lane_of($c)) as $lane |
+    (provider_of($c)) as $p |
     if $sq then
       {profile: $c, provider: $p, eligible: true, sq: true, reason: "ok"}
     elif $p == null then {profile: $c, eligible: false, reason: "no provider family for harness \($c.harness); declare provider on the profile"}
-    elif prov($p; $lane) == null then
+    elif $c.provider == "magpie" and (magpie_route_ok($c) | not) then
+      {profile: $c, provider: $p, eligible: false,
+       reason: "magpie model \(($c.model // "") | if . == "" then "(empty)" else . end) names no provider; expected magpie/<provider>/<model>"}
+    elif prov($c) == null then
       {profile: $c, provider: $p, eligible: true, unranked: true,
-       reason: (if any($q.providers[]; .provider == $p)
-                then "provider \($p) has no quota row for account \(if $lane == "" then "default" else $lane end)"
+       reason: (if $magpie == 1 then
+                 (if $c.provider == "magpie" then "\(route_label($c)) not in the quota snapshot"
+                  else "provider \($p) is not in this Magpie snapshot; a Magpie subscription is not a native allowance" end)
+                elif any($q.providers[]; .provider == $p)
+                then "provider \($p) has no quota row for account \(if lane_of($c) == "" then "default" else lane_of($c) end)"
                 else "provider \($p) not in the quota snapshot" end)}
     else
-      (applicable($p; $lane; ($c.model // ""))) as $rows |
+      (applicable($c)) as $rows |
       (evidence($rows)) as $bounds |
-      (floor_state($c.floor; $p; $lane)) as $profile_floor_state |
+      (floor_state($c.floor; $c)) as $profile_floor_state |
       if any($rows[]; (.runway.status // "") == "exhausted_now") then
         ($rows | map(select((.runway.status // "") == "exhausted_now")) | first) as $bad |
-        {profile: $c, provider: $p, bounds: $bounds, scope: $bad.scope, pct: ($bad.effectivePercentRemaining // null), runway: $bad.runway.status, eligible: false, reason: "runway exhausted_now at \($bad.scope)"}
+        {profile: $c, provider: $p, bounds: $bounds, scope: $bad.scope, window: ($bad.window // null), pct: ($bad.effectivePercentRemaining // null), runway: $bad.runway.status, eligible: false, reason: "runway exhausted_now at \(at($bad))"}
       elif any($rows[]; .status == "known" and (.effectivePercentRemaining | type) == "number" and .effectivePercentRemaining <= 0) then
         ($rows | map(select(.status == "known" and (.effectivePercentRemaining | type) == "number" and .effectivePercentRemaining <= 0)) | first) as $bad |
-        {profile: $c, provider: $p, bounds: $bounds, scope: $bad.scope, pct: $bad.effectivePercentRemaining, runway: $bad.runway.status, eligible: false, reason: "0% remaining at \($bad.scope)"}
+        {profile: $c, provider: $p, bounds: $bounds, scope: $bad.scope, window: ($bad.window // null), pct: $bad.effectivePercentRemaining, runway: $bad.runway.status, eligible: false, reason: "0% remaining at \(at($bad))"}
       elif $profile_floor_state == "below" then
-        ([rows($p; $lane)[] | select(
+        ([rows($c)[] | select(
           .scope == $c.floor.scope and
           .effectivePercentRemaining < $c.floor.min_percent
         )] | first) as $floor_row |
-        {profile: $c, provider: $p, bounds: $bounds, scope: ($floor_row.scope // $c.floor.scope), pct: ($floor_row.effectivePercentRemaining // null), runway: ($floor_row.runway.status // null), eligible: false, reason: "profile floor \($c.floor.scope) below \($c.floor.min_percent)%"}
-      elif (measured($p; $lane) | not) then
+        {profile: $c, provider: $p, bounds: $bounds, scope: ($floor_row.scope // $c.floor.scope), window: ($floor_row.window // null), pct: ($floor_row.effectivePercentRemaining // null), runway: ($floor_row.runway.status // null), eligible: false, reason: "profile floor \($c.floor.scope) below \($c.floor.min_percent)%"}
+      elif (measured($c) | not) then
         ($rows | first) as $row |
-        {profile: $c, provider: $p, bounds: $bounds, scope: ($row.scope // null), pct: ($row.effectivePercentRemaining // null), runway: ($row.runway.status // null), eligible: true, unranked: true, unknown: true, reason: "provider \($p) unmeasured (\(prov($p; $lane).quotaSemantics.status))"}
+        {profile: $c, provider: $p, bounds: $bounds, scope: ($row.scope // null), window: ($row.window // null), pct: ($row.effectivePercentRemaining // null), runway: ($row.runway.status // null), eligible: true, unranked: true, unknown: true, reason: "\(route_label($c)) unmeasured (\(prov($c).quotaSemantics.status))\(if note_of($c) != "" then ": \(note_of($c))" else "" end)"}
       elif ($rows | length) == 0 then
-        {profile: $c, provider: $p, bounds: $bounds, eligible: true, unranked: true, unknown: true, reason: "no applicable quota row for provider \($p)"}
+        {profile: $c, provider: $p, bounds: $bounds, eligible: true, unranked: true, unknown: true, reason: "no applicable quota row for \(route_label($c))"}
       elif $profile_floor_state == "unknown" then
-        ([rows($p; $lane)[] | select(.scope == $c.floor.scope)] | first) as $floor_row |
-        {profile: $c, provider: $p, bounds: $bounds, scope: $c.floor.scope, pct: ($floor_row.effectivePercentRemaining // null), runway: ($floor_row.runway.status // null), eligible: true, unranked: true, unknown: true, reason: "profile floor \($c.floor.scope) is unverifiable: not rankable"}
+        ([rows($c)[] | select(.scope == $c.floor.scope)] | first) as $floor_row |
+        {profile: $c, provider: $p, bounds: $bounds, scope: $c.floor.scope, window: ($floor_row.window // null), pct: ($floor_row.effectivePercentRemaining // null), runway: ($floor_row.runway.status // null), eligible: true, unranked: true, unknown: true, reason: "profile floor \($c.floor.scope) is unverifiable: not rankable"}
       elif any($rows[]; .status != "known") then
         ($rows | map(select(.status != "known")) | first) as $bad |
-        {profile: $c, provider: $p, bounds: $bounds, scope: $bad.scope, eligible: true, unranked: true, unknown: true, reason: "quota row \($bad.scope) unknown: not rankable"}
+        {profile: $c, provider: $p, bounds: $bounds, scope: $bad.scope, window: ($bad.window // null), eligible: true, unranked: true, unknown: true, reason: "quota row \(at($bad)) unknown: not rankable"}
       elif any($rows[]; (.selection.spendPriority | type) != "number") then
         ($rows | map(select((.selection.spendPriority | type) != "number")) | first) as $bad |
-        {profile: $c, provider: $p, bounds: $bounds, scope: $bad.scope, pct: $bad.effectivePercentRemaining, runway: $bad.runway.status, eligible: true, unranked: true, reason: "spendPriority missing or non-numeric at \($bad.scope): not rankable"}
+        {profile: $c, provider: $p, bounds: $bounds, scope: $bad.scope, window: ($bad.window // null), pct: $bad.effectivePercentRemaining, runway: $bad.runway.status, eligible: true, unranked: true, reason: (if $c.provider == "magpie" then "magpie publishes no spendPriority at \(at($bad)): not rankable" else "spendPriority missing or non-numeric at \(at($bad)): not rankable" end)}
       else
         ($rows | min_by(.selection.spendPriority)) as $limiting |
-        {profile: $c, provider: $p, bounds: $bounds, scope: $limiting.scope, pct: $limiting.effectivePercentRemaining,
+        {profile: $c, provider: $p, bounds: $bounds, scope: $limiting.scope, window: ($limiting.window // null), pct: $limiting.effectivePercentRemaining,
          spendPriority: $limiting.selection.spendPriority, runway: $limiting.runway.status, eligible: true, reason: "ok"}
       end
     end;
@@ -693,7 +751,7 @@ RESULT=$(jq -n --arg floor "$CONFIDENCE_FLOOR" --argjson lat "$LAT_MS" --arg non
    end) as $fb |
   (if $fb.to then $fb.to else $picked end) as $choice |
   (rule_at($choice)) as $rule |
-  (if $sq or $rule == null then "none" else floor_state($rule.floor; $rule.floor.provider; "") end) as $rule_floor_state |
+  (if $sq or $rule == null then "none" else floor_state($rule.floor; {provider: $rule.floor.provider}) end) as $rule_floor_state |
   (if $choice != "default" and $rule == null then []
    elif $rule == null then profiles($cfg.default // null)
    else profiles($rule.use)
@@ -767,7 +825,7 @@ TEXT=$(jq -r '
   (.candidates[]? | "  candidate: \(.profile.harness | flat):\(show(.profile.model))"
       + (if .provider then "  provider=\(.provider | flat)" else "" end)
       + (if .scope then "  scope=\(.scope | flat)  remaining=\(show(.pct))%  spendPriority=\(show(.spendPriority))  runway=\(show(.runway))" else "" end)
-      + (if (.bounds // [] | length) > 1 then "  bounds=" + ([.bounds[] | "\(.scope | flat):\(show(.pct))%/\((.runway // .status) | flat)"] | join(",")) else "" end)
+      + (if (.bounds // [] | length) > 1 then "  bounds=" + ([.bounds[] | "\(.scope | flat)\(if (.window // "") != "" then "[" + (.window | flat) + "]" else "" end):\(show(.pct))%/\((.runway // .status) | flat)"] | join(",")) else "" end)
       + "  -> " + (if .unranked then "eligible, unranked: \(.reason | flat): disclosed uncertainty" elif .sq then "eligible (quota ranking off: home declares a single shared quota)" elif .eligible then "eligible" else "not eligible: \(.reason | flat)" end)),
   (if .chosen then "  profile: --harness \(.chosen.profile.harness | shell_arg)"
       + (if .chosen.profile.model then " --model \(.chosen.profile.model | shell_arg)" else "" end)
