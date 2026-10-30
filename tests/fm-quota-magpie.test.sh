@@ -34,26 +34,47 @@ fi
 # shellcheck source=bin/fm-quota-axi-lib.sh
 . "$ROOT/bin/fm-quota-axi-lib.sh"
 fm_quota_json_valid < "$TMP_ROOT/out.json" || fail "normalized magpie snapshot must validate as schema 6"
+# A Magpie route names its own subscription provider, so one subscription per
+# provider is that route's real window list, and two subscriptions under one
+# provider name still identify no single account.
 jq -e '
-  .schemaVersion == 6 and
-  (.providers | length) == 1 and
-  .providers[0].provider == "magpie" and
-  .providers[0].accountKey == "unattributed" and
-  .providers[0].quotaSemantics.status == "unknown" and
-  (.providers[0].quotaSemantics.effectiveAvailability[0].status == "unknown") and
-  (.providers[0].quotaSemantics.effectiveAvailability[0] | has("effectivePercentRemaining") | not) and
-  (.providers[0].quotaSemantics.effectiveAvailability[0] | has("selection") | not) and
-  ([.. | strings] | index("hidden-one")) == null and
-  ([.. | strings] | index("hidden-two")) == null and
-  ([.. | strings] | index("spendPriority") | not)
-' "$TMP_ROOT/out.json" >/dev/null || fail "a full sibling must not become known quota or a login"
+  ([.providers[] | select(.provider == "codex")][0]) as $c
+  | ([.providers[] | select(.provider == "deepseek")][0]) as $d
+  | .schemaVersion == 6 and
+    ([.providers[].provider] == ["codex", "deepseek", "grok", "opencode-go"]) and
+    all(.providers[]; .accountKey == "default") and
+    $c.quotaSemantics.status == "unknown" and
+    ($c.note | test("^2 subscriptions named codex")) and
+    ($c.quotaSemantics.effectiveAvailability[0].status == "unknown") and
+    ($c.quotaSemantics.effectiveAvailability[0] | has("effectivePercentRemaining") | not) and
+    $d.quotaSemantics.status == "unknown" and
+    ($d.note | test("no percentage window")) and
+    ([.. | objects | keys[]] | index("spendPriority")) == null and
+    ([.. | strings] | index("hidden-one")) == null and
+    ([.. | strings] | index("hidden-two")) == null
+' "$TMP_ROOT/out.json" >/dev/null \
+  || fail "one provider with two subscriptions must stay unknown, without a login or an invented rank"
+pass "two subscriptions under one provider stay unknown, without a login or an invented rank"
+jq -e '
+  ([.providers[] | select(.provider == "grok")][0].quotaSemantics) as $g
+  | ([.providers[] | select(.provider == "opencode-go")][0].quotaSemantics) as $o
+  | $g.status == "known" and
+    [$g.effectiveAvailability[] | [.scope, .status, .effectivePercentRemaining, .window, .runway.status]] ==
+      [["all_models", "known", 0, "7 days", "unknown"]] and
+    $o.status == "known" and
+    [$o.effectiveAvailability[] | [.scope, .status, .effectivePercentRemaining, .window]] ==
+      [["all_models", "known", 100, "5 hours"], ["all_models", "known", 60, "7 days"]] and
+    all($o.effectiveAvailability[]; .runway.status == "unknown" and (has("selection") | not))
+' "$TMP_ROOT/out.json" >/dev/null \
+  || fail "a provider magpie reports once must supply that provider's own windows"
+pass "a provider magpie reports once supplies its own windows, exhausted or not"
 first=$(cat "$TMP_ROOT/out.json")
 jq 'reverse' "$TMP_ROOT/split.json" > "$TMP_ROOT/reordered.json"
 "$TOOL" "$TMP_ROOT/reordered.json" > "$TMP_ROOT/reordered-out.json"
 [ "$first" = "$(cat "$TMP_ROOT/reordered-out.json")" ] || fail "list order must not change the snapshot"
-pass "missing account attribution stays unknown, and order does not matter"
+pass "list order does not change the snapshot"
 jq -e '
-  .providers[0].subscriptions as $s |
+  ([.providers[].subscriptions[]]) as $s |
   ($s | length) == 5 and
   ([$s[] | select(.provider == "codex")] | length) == 2 and
   any($s[]; .error == "Unauthorized" and .windows == []) and
@@ -64,6 +85,26 @@ jq -e '
   ([.. | strings | select(startswith("hidden-"))] | length) == 0
 ' "$TMP_ROOT/out.json" >/dev/null || fail "separate quota evidence must survive without account identity/history"
 pass "windows, resets, balances, read errors and freshness survive separately"
+
+cat > "$TMP_ROOT/partial.json" <<'JSON'
+[
+  {"provider":"kimi","error":"Unauthorized","windows":[{"name":"7 days","used":0,"remaining":100}]},
+  {"provider":"cursor","windows":[{"name":"Month","used":10},{"name":"7 days","used":2,"remaining":98}]},
+  {"provider":"claude","windows":[{"name":"5 hours","used":0,"remaining":100},{"name":"7 days","used":50,"remaining":50}]}
+]
+JSON
+"$TOOL" "$TMP_ROOT/partial.json" > "$TMP_ROOT/partial-out.json" \
+  || fail "a provider whose window or read failed must still normalize"
+jq -e '
+  ([.providers[] | select(.provider == "kimi")][0]) as $k
+  | ([.providers[] | select(.provider == "cursor")][0]) as $u
+  | ([.providers[] | select(.provider == "claude")][0].quotaSemantics) as $h
+  | $k.quotaSemantics.status == "unknown" and ($k.note | test("read failed: Unauthorized")) and
+    $u.quotaSemantics.status == "unknown" and ($u.note | test("window publishes no remaining percentage")) and
+    $h.status == "known" and [$h.effectiveAvailability[] | .effectivePercentRemaining] == [100, 50]
+' "$TMP_ROOT/partial-out.json" >/dev/null \
+  || fail "an unreadable window or failed read must stay visible uncertainty"
+pass "a read error or an unreadable window stays visible uncertainty, not healthy allowance"
 
 mkdir "$TMP_ROOT/bin"
 cat > "$TMP_ROOT/bin/magpie" <<'SH'
