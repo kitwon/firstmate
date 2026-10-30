@@ -18,12 +18,13 @@ pass "quota-axi library is untouched"
 cat > "$TMP_ROOT/split.json" <<'JSON'
 [
   {"provider":"codex","user":"hidden-one","windows":[],"error":"Unauthorized"},
-  {"provider":"codex","user":"hidden-two","windows":[{"name":"5 hours","used":5,"remaining":95}]},
+  {"provider":"codex","kind":"subscription","plan":"team","user":"hidden-two","readAt":"2026-10-30T06:00:00Z","last":true,"lastServedAt":"2026-10-30T05:59:00Z","windows":[{"name":"5 hours","used":5,"remaining":95,"resetsAt":"2026-10-30T10:00:00Z","holds":{"user":"hidden-nested"}}],"resetsUsed":[{"user":"hidden-history"}]},
   {"provider":"grok","user":"hidden-grok","windows":[{"name":"7 days","used":100,"remaining":0}]},
   {"provider":"opencode-go","user":"hidden-go","windows":[
     {"name":"5 hours","used":0,"remaining":100},
     {"name":"7 days","used":40,"remaining":60}
   ]},
+  {"provider":"deepseek","kind":"balance","user":"hidden-balance","balance":"¥15.86","windows":[]},
   {"provider":"not a key","user":"hidden-bad","windows":[{"used":1,"remaining":99}]}
 ]
 JSON
@@ -51,6 +52,39 @@ jq 'reverse' "$TMP_ROOT/split.json" > "$TMP_ROOT/reordered.json"
 "$TOOL" "$TMP_ROOT/reordered.json" > "$TMP_ROOT/reordered-out.json"
 [ "$first" = "$(cat "$TMP_ROOT/reordered-out.json")" ] || fail "list order must not change the snapshot"
 pass "missing account attribution stays unknown, and order does not matter"
+jq -e '
+  .providers[0].subscriptions as $s |
+  ($s | length) == 5 and
+  ([$s[] | select(.provider == "codex")] | length) == 2 and
+  any($s[]; .error == "Unauthorized" and .windows == []) and
+  any($s[]; .plan == "team" and .readAt == "2026-10-30T06:00:00Z" and
+    .last == true and .lastServedAt == "2026-10-30T05:59:00Z" and
+    .windows == [{name:"5 hours",used:5,remaining:95,resetsAt:"2026-10-30T10:00:00Z"}]) and
+  any($s[]; .provider == "deepseek" and .balance == "¥15.86") and
+  ([.. | strings | select(startswith("hidden-"))] | length) == 0
+' "$TMP_ROOT/out.json" >/dev/null || fail "separate quota evidence must survive without account identity/history"
+pass "windows, resets, balances, read errors and freshness survive separately"
+
+mkdir "$TMP_ROOT/bin"
+cat > "$TMP_ROOT/bin/magpie" <<'SH'
+#!/usr/bin/env bash
+[ "$*" = "quota --json" ] || exit 99
+printf '%s\n' 'quota diagnostic' >&2
+if [ "${MAGPIE_TEST_FAIL:-0}" = 1 ]; then exit 1; fi
+cat "$MAGPIE_TEST_INPUT"
+SH
+chmod +x "$TMP_ROOT/bin/magpie"
+export MAGPIE_TEST_INPUT="$TMP_ROOT/split.json"
+PATH="$TMP_ROOT/bin:$PATH" "$TOOL" --read > "$TMP_ROOT/read.json" 2> "$TMP_ROOT/err"
+assert_equals "$first" "$(cat "$TMP_ROOT/read.json")" "live read uses the same normalization"
+assert_contains "$(cat "$TMP_ROOT/err")" 'quota diagnostic' "successful read preserves diagnostics on stderr"
+if PATH="$TMP_ROOT/bin:$PATH" MAGPIE_TEST_FAIL=1 "$TOOL" --read > "$TMP_ROOT/failed.json" 2> "$TMP_ROOT/err"; then
+  fail "failed magpie command must fail the reader"
+fi
+[ ! -s "$TMP_ROOT/failed.json" ] || fail "failed read must not emit a snapshot"
+assert_contains "$(cat "$TMP_ROOT/err")" 'quota diagnostic' "failed read preserves original diagnostics"
+assert_contains "$(cat "$TMP_ROOT/err")" 'magpie quota --json failed' "failed read explains the command"
+pass "read diagnostics remain visible without contaminating JSON"
 
 printf '%s\n' '{"providers":[]}' > "$TMP_ROOT/bad.json"
 if "$TOOL" "$TMP_ROOT/bad.json" >/dev/null 2>"$TMP_ROOT/err"; then

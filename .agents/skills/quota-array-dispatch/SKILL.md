@@ -78,8 +78,10 @@ Apply quota at the granularity the vendor actually supplies.
 A provider-level or `all_models`/`all_products` scope bounds every model you established in that family within the candidate's matched account, including one with no window of its own.
 A named-model or named-product scope is an additional bound for that model alone.
 Match the candidate to its `quota[]` row by that established provider, its `accountKey` when the snapshot is schema 6 (a Pi lane's auth provider id such as `openai-codex-work`, or `codex-home` for native Codex including Pi's `codex-native/` adapter, then the `default` row, else unmeasured; never a row picked by position, never rows summed across accounts), and scope; a stale, auth-required, or unmeasurable scope is named in `attention[]` instead of a fabricated number.
-A profile whose provider is `magpie` is not a quota-axi family: its evidence is `magpie quota --json` through `bin/fm-magpie-quota.sh`.
-Magpie names subscriptions but not which one served the model, and it publishes no spendPriority, so the profile stays unknown and unranked.
+A profile whose provider is `magpie` is not a quota-axi family: read its evidence with `bin/fm-magpie-quota.sh --read` (the helper's header owns output and diagnostic handling).
+Inspect `providers[0].subscriptions` for separate subscription windows, resets, freshness, balances, and read errors; an unknown routing verdict does not mean the quota read failed.
+Magpie's `last` and `lastServedAt` describe recent gateway use, not stable model-to-account attribution.
+Magpie names subscriptions but not which one will serve the model, and it publishes no spendPriority, so the profile stays unknown and unranked.
 Do not treat remaining percent as spendPriority, and do not let a fuller subscription authorize a different one.
 A native quota-axi row is not that account's allowance.
 
