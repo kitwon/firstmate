@@ -6,13 +6,15 @@
 #   fm-magpie-quota.sh --read
 #
 # <raw-json> is one `magpie quota --json` document already captured.
-# --read runs `magpie quota --json` itself. That command is the window list
-# Magpie already holds (magpie quota --help). It is not quota reset, credits,
-# auto-reset, accounts refresh, or accounts add.
+# --read asks Magpie for current vendor quota (subject to its short cache).
+# It does not change reset, credits, auto-reset, or account settings.
+# Magpie diagnostics remain on stderr, separate from the JSON snapshot.
 #
 # Output is one schema-6 snapshot the existing quota join already accepts,
-# with a single unknown magpie row keyed `unattributed`. `magpie quota --json`
-# on magpie 0.1.1230 names each subscription by `provider` and `user` and
+# with a single unknown magpie row keyed `unattributed`. `subscriptions`
+# preserves provider, plan, windows, balance, read errors and freshness as
+# observational evidence, without logins or nested usage/reset history.
+# Magpie names each subscription by `provider` and `user` and
 # gives windows, but no stable account id and no field saying which
 # subscription served a model. List order is not an id. The login is not
 # copied and is not hashed into a key. Magpie does not publish spendPriority,
@@ -39,11 +41,18 @@ usage() {
 normalize='
   def family_id($p):
     ($p | type) == "string" and ($p | test("^[a-z0-9]+(-[a-z0-9]+)*$"));
+  def fields($names): with_entries(select(.key as $k | $names | index($k)));
   if type != "array" then error("magpie quota is not an array") else . end |
-  [ .[] | select(family_id(.provider // "")) ] as $rows |
+  [ .[] | select(type == "object") | select(family_id(.provider // "")) ] as $rows |
   if ($rows | length) == 0 then error("magpie quota has no provider rows") else . end |
   {schemaVersion: 6, providers: [
     {provider: "magpie", accountKey: "unattributed",
+     subscriptions: ($rows | map(
+       fields(["provider", "kind", "plan", "balance", "readAt", "error", "lastServedAt", "last", "windows"]) |
+       if has("windows") then
+         .windows |= map(fields(["name", "used", "remaining", "resetsAt"]))
+       else . end
+     ) | sort_by(tojson)),
      quotaSemantics: {status: "unknown", effectiveAvailability: [
        {scope: "all_models", status: "unknown", runway: {status: "unknown"}}]}}]}
 '
@@ -64,7 +73,7 @@ if [ "$read_raw" -eq 1 ]; then
   command -v magpie >/dev/null 2>&1 || die "magpie not installed"
   raw=$(mktemp) || die "mktemp failed"
   trap 'rm -f "$raw"' EXIT
-  magpie quota --json > "$raw" 2>/dev/null || die "magpie quota --json failed"
+  magpie quota --json > "$raw" || die "magpie quota --json failed"
   src=$raw
 else
   [ -n "$src" ] || die "need a raw json file or --read"
