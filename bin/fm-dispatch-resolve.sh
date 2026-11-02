@@ -723,7 +723,7 @@ RESULT=$(jq -n --arg floor "$CONFIDENCE_FLOOR" --argjson lat "$LAT_MS" --arg non
         {profile: $c, provider: $p, bounds: $bounds, scope: $bad.scope, window: ($bad.window // null), eligible: true, unranked: true, unknown: true, reason: "quota row \(at($bad)) unknown: not rankable"}
       elif any($rows[]; (.selection.spendPriority | type) != "number") then
         ($rows | map(select((.selection.spendPriority | type) != "number")) | first) as $bad |
-        {profile: $c, provider: $p, bounds: $bounds, scope: $bad.scope, window: ($bad.window // null), pct: $bad.effectivePercentRemaining, runway: $bad.runway.status, eligible: true, unranked: true, reason: (if $c.provider == "magpie" then "magpie publishes no spendPriority at \(at($bad)): not rankable" else "spendPriority missing or non-numeric at \(at($bad)): not rankable" end)}
+        {profile: $c, provider: $p, bounds: $bounds, scope: $bad.scope, window: ($bad.window // null), pct: $bad.effectivePercentRemaining, runway: $bad.runway.status, eligible: true, unranked: true, reason: (if $bad.selection.status == "unknown" then "spendPriority unknown at \(at($bad)): not rankable" elif $c.provider == "magpie" then "magpie publishes no spendPriority at \(at($bad)): not rankable" else "spendPriority missing or non-numeric at \(at($bad)): not rankable" end)}
       else
         ($rows | min_by(.selection.spendPriority)) as $limiting |
         {profile: $c, provider: $p, bounds: $bounds, scope: $limiting.scope, window: ($limiting.window // null), pct: $limiting.effectivePercentRemaining,

@@ -87,7 +87,10 @@ One subscription under that provider is that route's real windows.
 A provider Magpie reports more than once names separate accounts that no route field distinguishes, so that provider stays unmeasured with its `note` saying why, and every subscription stays in `providers[].subscriptions` beside its own windows, resets, freshness, balance, and read error.
 Inspect those subscriptions rather than one merged figure, and remember an unknown routing verdict is not a failed quota read.
 Magpie's `last` and `lastServedAt` describe recent gateway use, never which subscription served a request.
-Magpie publishes no spendPriority, so a route with real windows is unranked rather than unknown: an exhausted applicable window blocks it, and remaining percent neither ranks it nor lets a fuller sibling authorize a different route.
+A Magpie route is ranked by `selection.spendPriority` when `bin/fm-magpie-quota.sh` publishes that scalar from quota-axi's pace calculator at the floor in `bin/fm-quota-axi-lib.sh`.
+The helper's header owns which window labels have a trusted cycle and which inputs stay unknown.
+A missing calculator, missing `readAt`, unmeasurable bound, expired reset, or ambiguous account leaves the scalar unknown: the candidate stays eligible and unranked, and remaining percent is not a substitute rank.
+An exhausted applicable window still blocks the route.
 A native quota-axi row is not that account's allowance.
 
 A candidate authenticates through its own tuple's surface; another harness's CLI can never gate it, and `harness=pi` with `model=xai/grok-*` is Pi using xAI rather than the standalone Grok CLI.

@@ -4,6 +4,10 @@
 # bin/fm-quota-axi-lib.sh must stay byte-identical to HEAD.
 set -u
 
+# The structural fixtures predate a floor-meeting pace calculator. Keep them on
+# that contract; the selection cases below opt back in.
+export FM_MAGPIE_DISABLE_PACE=1
+
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
@@ -136,5 +140,76 @@ pass "a non-array payload is an error"
 git -C "$ROOT" diff --exit-code -- bin/fm-quota-axi-lib.sh bin/fm-quota-choose.sh bin/fm-procevent-quota.sh \
   || fail "sourcing the validator must not rewrite a quota-axi script"
 pass "quota-axi scripts stay untouched after the adapter runs"
+
+unset FM_MAGPIE_DISABLE_PACE
+pace=$("$TOOL" --print-pace-module)
+if [ -z "$pace" ]; then
+  pass "spendPriority cases blocked: no quota-axi pace module at or above the floor"
+else
+  cat > "$TMP_ROOT/ranked.json" <<'JSON'
+[
+  {"provider":"grok","readAt":"2030-01-08T00:00:00Z","windows":[
+    {"name":"5 hours","used":80,"remaining":20,"resetsAt":"2030-01-08T04:00:00Z"},
+    {"name":"7 days","used":10,"remaining":90,"resetsAt":"2030-01-14T00:00:00Z"}
+  ]},
+  {"provider":"opencode-go","readAt":"2030-01-15T00:00:00Z","windows":[
+    {"name":"5 hours","used":0,"remaining":100,"resetsAt":"2030-01-15T05:00:00Z"},
+    {"name":"7 days","used":0,"remaining":100},
+    {"name":"Month","used":98,"remaining":2,"resetsAt":"2030-02-01T00:00:00Z"}
+  ]},
+  {"provider":"claude","readAt":"2030-01-08T00:00:00Z","windows":[
+    {"name":"7 days","used":100,"remaining":0,"resetsAt":"2030-01-14T00:00:00Z"}
+  ]},
+  {"provider":"kimi","readAt":"2030-01-08T00:00:00Z","windows":[
+    {"name":"7 days","used":10,"remaining":90,"resetsAt":"2030-01-01T00:00:00Z"}
+  ]},
+  {"provider":"cursor","readAt":"2030-01-08T00:00:00Z","windows":[
+    {"name":"Month","used":10,"remaining":90,"resetsAt":"2030-02-01T00:00:00Z"}
+  ]},
+  {"provider":"codex","user":"hidden-a","windows":[{"name":"5 hours","used":1,"remaining":99,"resetsAt":"2030-01-08T05:00:00Z"}],"readAt":"2030-01-08T00:00:00Z"},
+  {"provider":"codex","user":"hidden-b","windows":[{"name":"5 hours","used":1,"remaining":99,"resetsAt":"2030-01-08T05:00:00Z"}],"readAt":"2030-01-08T00:00:00Z"},
+  {"provider":"deepseek","windows":[
+    {"name":"5 hours","used":0,"remaining":100,"resetsAt":"2030-01-08T05:00:00Z"}
+  ]}
+]
+JSON
+  "$TOOL" "$TMP_ROOT/ranked.json" > "$TMP_ROOT/ranked-out.json" \
+    || fail "a ranked magpie document must normalize: $(cat "$TMP_ROOT/err" 2>/dev/null)"
+  fm_quota_json_valid < "$TMP_ROOT/ranked-out.json" || fail "ranked magpie snapshot must validate as schema 6"
+  jq -e '
+    ([.providers[] | select(.provider == "grok")][0].quotaSemantics) as $g
+    | ([.providers[] | select(.provider == "opencode-go")][0].quotaSemantics) as $o
+    | ([.providers[] | select(.provider == "claude")][0].quotaSemantics) as $c
+    | ([.providers[] | select(.provider == "kimi")][0].quotaSemantics) as $k
+    | ([.providers[] | select(.provider == "cursor")][0].quotaSemantics) as $u
+    | ([.providers[] | select(.provider == "codex")][0]) as $x
+    | ([.providers[] | select(.provider == "deepseek")][0].quotaSemantics) as $d
+    | ($g.effectiveAvailability[0].selection.spendPriority) > ($o.effectiveAvailability[0].selection.spendPriority)
+    and $g.effectiveAvailability[0].selection.spendPriority == 0.2315
+    and $o.effectiveAvailability[0].selection.spendPriority == -2.1126
+    and all($g.effectiveAvailability[]; .selection.spendPriority == 0.2315)
+    and $g.effectiveAvailability[0].effectivePercentRemaining == 20
+    and $o.effectiveAvailability[0].effectivePercentRemaining == 100
+    and $o.effectiveAvailability[2].effectivePercentRemaining == 2
+    and $o.effectiveAvailability[2].runway.status == "projected_exhaustion"
+    and $o.effectiveAvailability[2].runway.usableRunwaySeconds == 24686
+    and $o.effectiveAvailability[0].runway.status == "through_reset"
+    and $o.effectiveAvailability[1].runway.status == "unknown"
+    and $c.effectiveAvailability[0].runway.status == "exhausted_now"
+    and $c.effectiveAvailability[0].runway.usableRunwaySeconds == 0
+    and $k.effectiveAvailability[0].selection.status == "unknown"
+    and ($k.effectiveAvailability[0].selection | has("spendPriority") | not)
+    and $u.effectiveAvailability[0].selection.status == "unknown"
+    and ($u.effectiveAvailability[0].selection | has("spendPriority") | not)
+    and $x.quotaSemantics.status == "unknown"
+    and ($x | has("selection") | not)
+    and ([.. | strings] | index("hidden-a")) == null
+    and $d.effectiveAvailability[0].selection.status == "unknown"
+    and ($d.effectiveAvailability[0].selection | has("spendPriority") | not)
+  ' "$TMP_ROOT/ranked-out.json" >/dev/null \
+    || fail "headroom, the long-period bound, exhaustion, expiry, and missing clocks must stay distinct"
+  pass "a fuller short window does not outrank the higher spendPriority, and a month bound stays visible"
+  pass "exhausted, expired, unlabeled month, ambiguous accounts, and a missing readAt stay unranked"
+fi
 
 printf '# all fm-quota-magpie tests passed\n'

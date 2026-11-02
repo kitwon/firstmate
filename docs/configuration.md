@@ -1969,6 +1969,7 @@ After the answer, code applies all remaining checks and ranking:
 - The confidence floor and the matched rule's `approval` and `floor`.
 - Each candidate's `provider`, `quota_scope`, and `floor`.
 - Every applicable account-wide and model/product row from one quota snapshot: `quota-axi --json` for a native provider, and `magpie quota --json` through `bin/fm-magpie-quota.sh` for a `provider: magpie` route.
+  The helper publishes `selection.spendPriority` when quota-axi's pace calculator meets the floor in `bin/fm-quota-axi-lib.sh`; otherwise that route stays unranked.
 - The optional `preferred_provider` restriction under the [profile-array procedure](../.agents/skills/quota-array-dispatch/SKILL.md#rank-by-spendpriority).
 - The numeric `spendPriority` argmax within that candidate pool, using each candidate's limiting row.
 - With the home's `shared_quota: true` declaration ("Crew dispatch profiles"), the quota snapshot, floors, runway gates, and `spendPriority` argmax are skipped entirely; resolution is the matched rule's declared profile order (`preferred_provider` still narrows the pool; declared order then picks within it).
