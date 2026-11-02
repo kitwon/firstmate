@@ -1908,8 +1908,10 @@ cp "$BASE_RULES" "$RULES"
 # A Magpie route names its own subscription provider: magpie/<provider>/<model>,
 # or <provider>/<model> on a profile that declares provider magpie. That
 # provider's row is the route's real evidence; a sibling provider never stands
-# in for it, a provider Magpie reports twice identifies no single account, and
-# Magpie publishes no spendPriority so nothing is ranked from a percentage.
+# in for it, and a provider Magpie reports twice identifies no single account.
+# This block turns the pace calculator off so incomplete windows stay unranked
+# instead of depending on whichever quota-axi the machine has installed.
+export FM_MAGPIE_DISABLE_PACE=1
 MAGPIE_RULES="$TMP_ROOT/magpie-rules.json"
 MAGPIE_RAW="$TMP_ROOT/magpie-raw.json"
 MAGPIE_REORDERED="$TMP_ROOT/magpie-reordered.json"
@@ -2088,5 +2090,104 @@ TYPESAFE_API_KEY=$KEY run code out err "$BRIEF"
 assert_equals '--json' "$(cat "$LOG/quota-axi.calls")" "a file without provider magpie still reads quota-axi"
 [ ! -e "$LOG/magpie.calls" ] || fail "quota-axi profiles must not call magpie"
 pass "provider magpie leaves native quota-axi dispatch untouched"
+
+unset FM_MAGPIE_DISABLE_PACE
+if [ -z "$("$ROOT/bin/fm-magpie-quota.sh" --print-pace-module)" ]; then
+  pass "magpie spendPriority dispatch cases blocked: no quota-axi pace module at or above the floor"
+else
+  cat > "$TMP_ROOT/magpie-rank-rules.json" <<'JSON'
+{
+  "rules": [
+    {
+      "when": "Router work.",
+      "use": [
+        { "harness": "pi", "model": "magpie/opencode-go/glm-5.3-flash", "provider": "magpie", "effort": "medium" },
+        { "harness": "pi", "model": "magpie/grok/grok-4.7", "provider": "magpie", "effort": "high" },
+        { "harness": "pi", "model": "magpie/claude/claude-opus", "provider": "magpie", "effort": "high" },
+        { "harness": "pi", "model": "magpie/codex/gpt-6-luna", "provider": "magpie", "effort": "xhigh" },
+        { "harness": "pi", "model": "magpie/kimi/kimi-k2", "provider": "magpie", "effort": "medium" }
+      ]
+    }
+  ]
+}
+JSON
+  cat > "$TMP_ROOT/magpie-rank.json" <<'JSON'
+[
+  {"provider":"opencode-go","readAt":"2030-01-15T00:00:00Z","windows":[
+    {"name":"5 hours","used":0,"remaining":100,"resetsAt":"2030-01-15T05:00:00Z"},
+    {"name":"7 days","used":0,"remaining":100},
+    {"name":"Month","used":98,"remaining":2,"resetsAt":"2030-02-01T00:00:00Z"}
+  ]},
+  {"provider":"grok","readAt":"2030-01-08T00:00:00Z","windows":[
+    {"name":"5 hours","used":80,"remaining":20,"resetsAt":"2030-01-08T04:00:00Z"},
+    {"name":"7 days","used":10,"remaining":90,"resetsAt":"2030-01-14T00:00:00Z"}
+  ]},
+  {"provider":"claude","readAt":"2030-01-08T00:00:00Z","windows":[
+    {"name":"7 days","used":100,"remaining":0,"resetsAt":"2030-01-14T00:00:00Z"}
+  ]},
+  {"provider":"codex","user":"one@example","windows":[],"error":"Unauthorized"},
+  {"provider":"codex","user":"two@example","readAt":"2030-01-08T00:00:00Z","windows":[
+    {"name":"7 days","used":50,"remaining":50,"resetsAt":"2030-01-11T12:00:00Z"}
+  ]},
+  {"provider":"kimi","readAt":"2030-01-08T00:00:00Z","windows":[
+    {"name":"7 days","used":10,"remaining":90,"resetsAt":"2030-01-01T00:00:00Z"}
+  ]}
+]
+JSON
+  cp "$TMP_ROOT/magpie-rank-rules.json" "$RULES"
+  reset_log
+  export MAGPIE_CALLS="$LOG/magpie.calls" MAGPIE_FIXTURE="$TMP_ROOT/magpie-rank.json" MAGPIE_ADAPTER_CALLS="$LOG/magpie-adapter.calls"
+  cat > "$RESPONSE" <<'JSON'
+{ "model": "jev-1.13.0",
+  "answers": { "rule": { "type": "choice", "choice": "rule_1", "confidence": 0.9,
+    "probabilities": { "rule_1": 0.97, "default": 0.03 } } },
+  "usage": { "input_tokens": 100, "output_tokens": 20 } }
+JSON
+  TYPESAFE_API_KEY=$KEY run code out err "$BRIEF"
+  expect_code 0 "$code" "ranked magpie routes exit 0"
+  assert_contains "$out" '  status: clear' "the higher spendPriority is a clear route"
+  assert_contains "$out" "  profile: --harness 'pi' --model 'magpie/grok/grok-4.7' --effort 'high'" "the higher spendPriority wins over the fuller short window"
+  assert_contains "$out" 'candidate: pi:magpie/opencode-go/glm-5.3-flash  provider=magpie  scope=all_models  remaining=100%  spendPriority=-2.1126  runway=through_reset  bounds=all_models[5 hours]:100%/through_reset,all_models[7 days]:100%/unknown,all_models[Month]:2%/projected_exhaustion' "the almost empty month stays visible beside the full short window"
+  assert_contains "$out" 'candidate: pi:magpie/grok/grok-4.7  provider=magpie  scope=all_models  remaining=20%  spendPriority=0.2315  runway=projected_exhaustion' "the lower short-window headroom keeps the higher scalar"
+  assert_contains "$out" 'candidate: pi:magpie/claude/claude-opus  provider=magpie  scope=all_models  remaining=0%  spendPriority=-  runway=exhausted_now  -> not eligible: runway exhausted_now at all_models (7 days)' "an exhausted window is not a route"
+  assert_contains "$out" 'candidate: pi:magpie/codex/gpt-6-luna  provider=magpie  scope=all_models  remaining=-%  spendPriority=-  runway=unknown  -> eligible, unranked: provider magpie route codex unmeasured (unknown): 2 subscriptions named codex; magpie reports no stable account id: disclosed uncertainty' "two accounts stay unranked"
+  assert_contains "$out" 'candidate: pi:magpie/kimi/kimi-k2  provider=magpie  scope=all_models  remaining=90%  spendPriority=-  runway=unknown  -> eligible, unranked: spendPriority unknown at all_models (7 days): not rankable: disclosed uncertainty' "an expired reset stays unknown rather than a healthy rank"
+  assert_not_contains "$out" 'one@example' "a ranked read still does not copy a login"
+  [ ! -e "$LOG/quota-axi.calls" ] || fail "magpie ranking must not call the quota-axi CLI"
+  pass "magpie routes rank by spendPriority, keep the month visible, and veto exhaustion"
+
+  cat > "$TMP_ROOT/magpie-tie-rules.json" <<'JSON'
+{
+  "rules": [
+    {
+      "when": "Router work.",
+      "use": [
+        { "harness": "pi", "model": "magpie/grok/grok-4.7", "provider": "magpie", "effort": "high" },
+        { "harness": "pi", "model": "magpie/kimi/kimi-k2", "provider": "magpie", "effort": "medium" }
+      ]
+    }
+  ]
+}
+JSON
+  cat > "$TMP_ROOT/magpie-tie.json" <<'JSON'
+[
+  {"provider":"grok","readAt":"2030-01-08T00:00:00Z","windows":[
+    {"name":"7 days","used":50,"remaining":50,"resetsAt":"2030-01-11T12:00:00Z"}
+  ]},
+  {"provider":"kimi","readAt":"2030-01-08T00:00:00Z","windows":[
+    {"name":"7 days","used":50,"remaining":50,"resetsAt":"2030-01-11T12:00:00Z"}
+  ]}
+]
+JSON
+  cp "$TMP_ROOT/magpie-tie-rules.json" "$RULES"
+  reset_log
+  export MAGPIE_CALLS="$LOG/magpie.calls" MAGPIE_FIXTURE="$TMP_ROOT/magpie-tie.json" MAGPIE_ADAPTER_CALLS="$LOG/magpie-adapter.calls"
+  TYPESAFE_API_KEY=$KEY run code out err "$BRIEF"
+  assert_contains "$out" '  status: escalate' "a real spendPriority tie does not pick a route"
+  assert_contains "$out" '  reason: genuine spendPriority tie' "the tie is the spendPriority tie"
+  assert_not_contains "$out" '  profile:' "a tie emits no profile"
+  pass "a real magpie spendPriority tie escalates"
+fi
+cp "$BASE_RULES" "$RULES"
 
 printf '# all fm-dispatch-resolve tests passed\n'
