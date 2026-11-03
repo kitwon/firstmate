@@ -98,6 +98,16 @@
 # report, read back from the forge; a lane that deliberately holds a draft
 # declares a paused wait instead. bin/fm-pr-check.sh refuses to arm merge
 # monitoring on a draft through the same reading bin/fm-pr-merge.sh uses.
+# A home that arms config/draft-first-landing renders fm_dod_draft_first_block
+# for both publishing modes on a pull-request forge instead: the draft is the
+# FIRST handoff, before any validation spend, and the captain's landing
+# approval buys exactly one no-mistakes run for the head it names. The run
+# keeps push but skips pr and ci, like pr=manual, so the pipeline can neither
+# open a second pull request nor release the worker's draft early. Merge
+# authority is unchanged: the same pull request becomes ready for review only
+# after that run passes, and no block here authorizes a merge.
+# The flag is read at render time only, so a brief already scaffolded keeps the
+# contract it was spawned with and an enabled flag never rewrites live work.
 # This file is the one owner of the no-mistakes `--intent` contract: only the
 # brief's `## Captain's intent` subsection plus later captain words, never
 # `## Firstmate spec` and never the worker's own tradeoffs.
@@ -452,7 +462,7 @@ fm_nm_driving_block() {  # <forge|no-ci>
   fi
   # config/wait-no-turns selects the foreground drive. Absent, the text matches
   # the backgrounded drive a home had before that flag.
-  wait_cfg=${CONFIG:-${FM_CONFIG_OVERRIDE:-${FM_HOME:-}/config}}
+  wait_cfg=$(fm_dod_config_dir)
   if [ -e "$wait_cfg/wait-no-turns" ]; then
     drive_block="Drive the run with ONE foreground \`no-mistakes axi run\` and let it block.
 It bounds its own hold for you: \`--wait\` (default 8m) exists precisely so a harness with a ten-minute command cap gets a structured return instead of being killed mid-hold.
@@ -551,9 +561,100 @@ If you deliberately keep the PR a draft, append \`paused [at=<epoch>]: {why the 
 EOF
 }
 
+# The home config directory these renders read. It is the same resolution
+# fm_nm_driving_block below uses for config/wait-no-turns, so one home flag
+# never resolves against two different directories.
+fm_dod_config_dir() {
+  printf '%s\n' "${CONFIG:-${FM_CONFIG_OVERRIDE:-${FM_HOME:-}/config}}"
+}
+
+# 0 when this home opted into the draft-first landing flow. docs/configuration.md
+# owns the flag, its scope, and how it interacts with a project's posture;
+# rendering only, so tests set FM_HOME to a fixture home and the absent flag is
+# the historical contract everywhere else.
+fm_dod_draft_first_enabled() {
+  [ -e "$(fm_dod_config_dir)/draft-first-landing" ]
+}
+
+# The draft-first contract for a publishing task on a pull-request forge.
+# Two stages, because the captain reviews the diff before paying for review:
+# one draft pull request and a declared landing wait, then exactly one
+# no-mistakes run for the head that approval names, then that same pull request
+# marked ready. The run is the ordinary full pipeline - it owns review, fixes,
+# tests, documentation, lint, push, pull request, and CI - because the pull
+# request it publishes already exists: no-mistakes reuses the branch's open
+# pull request rather than opening a second one, so this flow never asks the
+# worker to skip a pipeline step and never moves a pipeline step into a manual
+# loop. `--skip` is absent here deliberately; the only owned difference from
+# the ordinary contract is when the flow starts and that the pull request stays
+# a draft until the run has passed.
+# The launch flags bind one run to one head: no-mistakes binds a run to
+# (repository, branch, --launch-nonce), so repeating the same approval for the
+# same head reuses that run rather than starting a second, while a new head is
+# a new generation that must be validated on its own. A deliberate new run at
+# the same head is `no-mistakes rerun`, which is a new run by design.
+# Callers are fm_dod_block only, which has already validated mode, forge, base,
+# and the pr=manual binding, and which renders this only for the default
+# pr=auto posture on a pull-request forge.
+fm_dod_draft_first_block() {  # <mode> <branch> <forge-cli> <draft-hold> <draft-check> <contract-suffix> <nm-base> <pr-base>
+  local mode=$1 branch=$2 forge_cli=$3 draft_hold=$4 draft_check=$5
+  local suffix=$6 nm_base=$7 pr_base=$8
+  cat <<EOF
+# Definition of done
+Delivery contract: mode=$mode$suffix
+Ship branch: $branch
+This task ships **draft-first**: one draft pull request goes up for the captain's review before any validation spend, and the captain's landing approval buys exactly one no-mistakes run.
+The task is complete only when committed on your branch.
+
+## First handoff: one draft pull request, no validation
+When the work is implemented, committed, and pushed, publish the draft and stop there.
+1. Find the pull request for your branch first (\`$forge_cli pr list --head $branch\`).
+   When one already exists, push and update that same pull request; never open a second one for the same work, not even after a rename or a rebase.
+   Otherwise open it with \`$forge_cli pr create --draft\`$pr_base.
+2. Write the title and body yourself, matching the project's recent merged pull requests and its contribution guide, in plain English for a reviewer who lacks your context, with no direct address, and keeping any issue reference the captain's intent names.
+   The pipeline owns the final published title and body on its own run; yours is what the captain reviews first.
+3. Read the pull request back from the forge and confirm it is a draft $draft_hold
+4. Later commits and reviewer feedback are ordinary pushes to that same branch: they update the draft and start no pipeline run at all.
+   The repository's own CI may still run on a draft push; that is the project's workflow, not this pipeline.
+5. Declare the landing wait and stop:
+   \`needs-decision [at=<epoch>] [key=landing-approval]: draft PR {url} ready for review - landing approval starts final validation\`
+   Name the draft's full URL exactly as the forge printed it.
+   Do not run /no-mistakes, do not mark the pull request ready, and never merge it at this stage.
+
+## After landing approval: exactly one validation run, then the same pull request ready
+${nm_base}When firstmate relays the captain's landing approval, validate the current head, once.
+If the captain asked for changes instead, make them, push them to the same draft, and declare the landing wait again.
+1. Commit or push anything still local first: the run validates the head this pull request will land, and nothing may stay uncommitted in this copy.
+   Run \`no-mistakes doctor\`; if it reports the repo is not initialized here, run \`no-mistakes init\`.
+2. Drive ONE run for this head with
+   \`no-mistakes axi run --intent-file <path> --launch-nonce \$(git rev-parse HEAD) --validation-generation \$(git rev-parse HEAD)\`
+   The intent file carries exactly the captain's intent text the driving rules below describe, written under the scratch location rule 2 names.
+   Both launch values are this copy's HEAD: that identity is what makes one approval start one run, so repeating the same approval for the same head reuses the existing run instead of starting a second, and a new commit is a new head that needs its own run.
+   Never pass a different nonce for the same head; a run that ended failed or aborted at a head you must validate again is redone with \`no-mistakes rerun\`, which is a new run by design.
+   This is the ordinary pipeline: pass no \`--skip\`, and drive it exactly as the rules below say.
+EOF
+  fm_nm_driving_block none
+  cat <<EOF
+
+3. The pipeline publishes through this same pull request.
+   It discovers the branch's open pull request and updates that one instead of opening another, so never open a second one yourself; if a run reports a different pull request than your draft, stop and append \`blocked\` naming both URLs rather than proceeding.
+4. Only when the run's outcome is passed, passed-with-skips, or passed-with-override and its drive call has reported the green CI return point may this pull request become ready.
+   For any other outcome it stays a draft: leave it alone and keep driving the run under the rules above, because the pipeline owns the fixes and the CI repair.
+   A run whose \`no-mistakes axi status\` reports \`branch_sync.next_action.code\` as \`recover_custody\` is unfinished: run the exact command that status prints first, and never mark a draft ready on an unvalidated or unrecovered head.
+5. Mark THIS pull request ready for review; never open a second, formal one:
+   \`$forge_cli pr ready <number>\`
+   If the pipeline already left it ready, confirm that state instead of marking it again.
+6. Read the pull request back and confirm it is not a draft $draft_check
+   A draft cannot be merged, so a done report on one leaves the merge unasked.
+7. Append \`done [at=<epoch>]: PR {url} checks green\` and stop. You are finished.
+That CI-ready \`done:\` is accepted only when this copy's HEAD - your latest commit - is one the run pushed, so commit nothing after the run.
+It authorizes no merge: the configured merge authority decides that on this same pull request.
+EOF
+}
+
 fm_dod_block() {  # <mode> <task-id> [branch] [<forge>] [<base>] [<consent>] [<pr>]
   local mode=$1 id=$2 forge=${4:-none} base=${5:-} consent=${6:-} pr=${7:-auto}
-  local branch=${3:-$(fm_default_ship_branch_prefix)$id} pr_base='' nm_base='' base_q contract_forge='' contract_consent='' forge_cli=gh-axi draft_check adapter
+  local branch=${3:-$(fm_default_ship_branch_prefix)$id} pr_base='' nm_base='' base_q contract_forge='' contract_consent='' forge_cli=gh-axi draft_check draft_hold adapter
   fm_forge_valid_for_mode "$forge" "$mode" fm_dod_block || return 1
   fm_base_branch_valid "$base" "$mode" "$forge" fm_dod_block || return 1
   fm_pr_text_valid "$pr" "$mode" "$forge" fm_dod_block || return 1
@@ -565,6 +666,7 @@ fm_dod_block() {  # <mode> <task-id> [branch] [<forge>] [<base>] [<consent>] [<p
     contract_consent=" upstream-consent=$consent"
   fi
   draft_check="(\`gh-axi pr view <number>\` must print \`draft: no\`, where <number> is the PR number from your PR URL); if it is a draft, mark it ready with \`gh-axi pr ready <number>\`."
+  draft_hold="(\`gh-axi pr view <number>\` must print \`draft: yes\`, where <number> is the PR number from your PR URL)"
   if [ "$forge" = forgejo ]; then
     contract_forge=' forge=forgejo'
     forge_cli=tea
@@ -575,6 +677,20 @@ fm_dod_block() {  # <mode> <task-id> [branch] [<forge>] [<base>] [<consent>] [<p
     pr_base=", against the base branch \`$base\` (\`--base $base_q\`), not the repository default"
     nm_base="This task's base branch is \`$base\`, not the repository default: pass \`--base-branch $base_q\` on every \`no-mistakes axi run\` that starts a run, so the pipeline rebases onto, opens its PR against, and watches CI for that branch.
 "
+  fi
+  # The draft-first flow needs a forge whose pull requests carry a draft state
+  # the CLI can set and read: gh-axi's `pr create --draft`, `pr ready`, and the
+  # `draft:` reading below. Forgejo's draft state is a title prefix and this
+  # repository has no verified tea version for it, so a forgejo or external
+  # project keeps its existing contract rather than gaining draft support
+  # claimed from documentation alone. A registered pr=manual project keeps its
+  # own posture too: its worker already owns the pull request text and the
+  # pipeline already runs without its pr step.
+  if [ "$pr" = auto ] && [ "$forge" = none ] && fm_mode_publishes "$mode" \
+    && fm_dod_draft_first_enabled; then
+    fm_dod_draft_first_block "$mode" "$branch" "$forge_cli" "$draft_hold" \
+      "$draft_check" "$contract_forge$contract_consent" "$nm_base" "$pr_base"
+    return
   fi
   case "$mode:$forge" in
     direct-PR:gerrit)

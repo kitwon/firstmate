@@ -14,6 +14,7 @@ Start with the directory layout, then use the setting reference for the behavior
 | Supervision and presentation | [Pi supervision branch](#pi-supervision-branch), [supervision host](#supervision-host-configsupervision-host), [Codex native Stop park](#codex-native-stop-park-configcodex-stop-park), [warm-cache compaction](#warm-cache-compaction-configwarm-compact), and [Calm preference](#calm-preference-configcalm) |
 | Persistent secondmates | [Secondmate routes](#secondmate-routes-datasecondmatesmd) |
 | Review bots on owned GitHub pull requests | [Contribution review bots](#contribution-review-bots-configcontribution-review-bots) |
+| Landing flow for PR-producing tasks | [Draft-first landing](#draft-first-landing-configdraft-first-landing) |
 | Per-run overrides and tuning | [Environment variables](#environment-variables) |
 
 ## FM_HOME
@@ -832,6 +833,23 @@ The flag takes effect at the next check sweep, and is a home-local preference th
 The optional local, gitignored `config/pipeline-spend` presence flag opts this home into recording per-task no-mistakes pipeline spend in `data/pipeline-spend.jsonl` during teardown.
 When the flag is absent, teardown skips recording and the recorder exits before reading task metadata, no-mistakes state, or the spend ledger.
 An existing ledger is left untouched while recording is disabled.
+
+## Draft-first landing (config/draft-first-landing)
+
+The optional local, gitignored `config/draft-first-landing` presence flag opts this home into reviewing a draft pull request before any validation spend.
+With the flag present, `bin/fm-dod-lib.sh` renders the draft-first Definition of done for every publishing ship task on a pull-request forge in the default PR-text posture: the worker pushes its branch, opens one draft pull request, and declares a `needs-decision [key=landing-approval]` wait instead of running the pipeline.
+Commits and reviewer feedback during that stage are ordinary pushes to the same draft, so a push never starts a pipeline run by itself; the repository's own CI may still run on those pushes.
+The captain's landing approval starts exactly one no-mistakes run for the head it names, the run publishes through that same pull request, and the worker marks it ready only after the run passes and CI is green.
+Repeating the same approval for the same head reuses the existing run rather than starting a second, and a new commit is a new head that needs its own run.
+It relies on two installed-tool behaviors: `no-mistakes axi run --launch-nonce` with `--validation-generation` binds one run to one head, and the pipeline's `pr` step discovers and updates the branch's existing pull request; a worker whose installed release lacks either reports that blocker rather than opening a duplicate pull request.
+Only opening a pull request is affected by the pipeline's own draft setting, and an existing pull request is never toggled between draft and ready by it, so this flow's draft stays a draft until its own worker releases it.
+The pipeline's CI step still watches the pull request's required checks while that pull request is a draft, so a project whose GitHub workflows trigger only on `ready_for_review` would leave that step waiting for checks that never register; such a project keeps this flag off or adds the draft trigger itself, because repository CI is not this flow's to change.
+`ship-landing` owns the supervisor steps, including the captain hold that records the landing decision.
+Merge authority is unchanged: `yolo`, the required checks, and `bin/fm-pr-merge.sh`'s draft refusal apply exactly as they do without the flag.
+Knowledge-only scouts, `local-only` tasks, and a project's `forge=gerrit` or `forge=external` binding are unaffected, because none of them publishes a pull request.
+A `forge=forgejo` project and a project registered `pr=manual` keep their existing contract, because this repository has no verified draft support for the forgejo CLI and a manual-PR worker already owns its pull request text.
+The flag is a home-local preference that is not inherited by secondmate homes, and it is read when a brief is scaffolded, so an already running task keeps the contract it was launched with.
+Activate it with `touch config/draft-first-landing` before the next ship spawn.
 
 ## No-mistakes home resolver (config/nm-home-resolver)
 

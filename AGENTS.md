@@ -240,6 +240,8 @@ The path's worker, automated gates, and captain approval remain authoritative:
 - **direct-PR** has the worker push and open a PR without the no-mistakes pipeline, then waits for the configured merge authority.
 - **local-only** has the worker stop with a clean ready branch, then waits for the configured merge authority before firstmate uses the guarded fast-forward merge path.
 
+A home with `config/draft-first-landing` renders a draft-first contract for publishing tasks: the worker opens one draft PR at its first handoff and holds for the captain's landing approval, that approval starts exactly one no-mistakes run for the current head, and the same PR becomes ready after that run passes (`ship-landing` owns those supervision steps; merge authority is unchanged).
+
 Delivery mode and `yolo` are orthogonal.
 `yolo` governs merge authority only: with it off, the captain approves every PR merge and every local-only landing; with it on, firstmate merges green, in-scope work itself.
 Never merge a red PR, or one with a required check that has not reported, under either setting unless a current explicit captain instruction names the GitHub check to waive or orders that merge for a GitLab merge request with no head pipeline; `bin/fm-pr-merge.sh`'s header owns the attended-only waiver mechanics and remaining guards.

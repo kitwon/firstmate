@@ -448,6 +448,114 @@ EOF
   pass "promotion keeps a scout's recorded base branch and refuses local-only for it"
 }
 
+# A fixture home that armed config/draft-first-landing, and one that did not.
+df_home() {  # <name> [armed|plain]
+  local home="$TMP_ROOT/df-$1"
+  mkdir -p "$home/config"
+  [ "${2:-armed}" = plain ] || touch "$home/config/draft-first-landing"
+  printf '%s\n' "$home"
+}
+
+# The draft-first contract exists only where the home armed it, and it carries
+# the three behaviors the flow is for: pushes before approval start no run, the
+# pipeline keeps its ordinary steps, and the same pull request becomes ready
+# only after that run passes.
+test_draft_first_contract_is_home_scoped() {
+  local armed plain mode out
+  armed=$(df_home armed)
+  plain=$(df_home plain plain)
+  for mode in no-mistakes direct-PR; do
+    out="$TMP_ROOT/df-$mode-armed.md"
+    FM_HOME="$armed" fm_dod_block "$mode" df-contract > "$out" \
+      || fail "$mode: draft-first rendering failed"
+    assert_grep 'ships **draft-first**' "$out" "$mode: no draft-first contract"
+    # shellcheck disable=SC2016  # literal backticks in rendered prose must stay unexpanded
+    assert_grep '`gh-axi pr create --draft`' "$out" "$mode: the first handoff must open a draft"
+    # shellcheck disable=SC2016
+    assert_grep '`gh-axi pr view <number>` must print `draft: yes`' "$out" \
+      "$mode: the first handoff must read the draft state back"
+    # shellcheck disable=SC2016
+    assert_grep '`needs-decision [at=<epoch>] [key=landing-approval]: draft PR {url} ready for review - landing approval starts final validation`' \
+      "$out" "$mode: the landing wait must be a keyed decision naming the draft"
+    assert_grep 'they update the draft and start no pipeline run at all' "$out" \
+      "$mode: later pushes must not start a pipeline run"
+    # shellcheck disable=SC2016
+    assert_grep 'pass no `--skip`' "$out" "$mode: the approval run must keep its pipeline steps"
+    assert_grep 'For any other outcome it stays a draft' "$out" \
+      "$mode: a non-passing run must leave the pull request a draft"
+    # shellcheck disable=SC2016
+    assert_grep '`gh-axi pr ready <number>`' "$out" "$mode: the same pull request must become ready"
+    assert_grep 'never open a second one for the same work' "$out" \
+      "$mode: a duplicate pull request must be forbidden"
+    assert_grep 'It authorizes no merge' "$out" "$mode: the ready report must not authorize a merge"
+
+    out="$TMP_ROOT/df-$mode-plain.md"
+    FM_HOME="$plain" fm_dod_block "$mode" df-contract > "$out" \
+      || fail "$mode: ordinary rendering failed"
+    assert_no_grep 'draft-first' "$out" "$mode: an unarmed home must keep the ordinary contract"
+  done
+  pass "draft-first contract is home-scoped and keeps the pipeline whole"
+}
+
+# The wait the contract declares has to be the record the approval machinery
+# actually closes: the rendered line goes through the real decision fold, and a
+# repeated approval must never reopen it or authorize a second landing.
+test_draft_first_landing_wait_closes_once() {
+  local home out state line wait resolved open
+  home=$(df_home wait)
+  state="$TMP_ROOT/df-wait-state"
+  mkdir -p "$state"
+  out="$TMP_ROOT/df-wait.md"
+  FM_HOME="$home" fm_dod_block no-mistakes df-wait > "$out" || fail "draft-first rendering failed"
+  # shellcheck disable=SC2016  # literal backticks in rendered prose must stay unexpanded
+  line=$(sed -n 's/^   `\(needs-decision \[at=<epoch>\] \[key=landing-approval\]:.*\)`$/\1/p' "$out")
+  [ -n "$line" ] || fail "the rendered contract holds no keyed landing wait"
+  wait=$(printf '%s\n' "$line" | sed 's/<epoch>/1793692000/; s|{url}|https://example.test/o/r/pull/7|')
+  resolved="resolved [at=1793692300] [key=landing-approval]: landing approved"
+
+  printf '%s\n' "$wait" > "$state/df-wait.status"
+  open=$(status_open_decisions "$state/df-wait.status" ship)
+  assert_contains "$open" "landing-approval" "the declared landing wait did not open its key"
+
+  printf '%s\n' "$resolved" >> "$state/df-wait.status"
+  open=$(status_open_decisions "$state/df-wait.status" ship)
+  [ -z "$open" ] || fail "the approval did not close the landing decision: $open"
+
+  # A restart re-reads the same durable record, and a repeated approval note is
+  # not a second authorization.
+  printf '%s\n' "$resolved" >> "$state/df-wait.status"
+  open=$(status_open_decisions "$state/df-wait.status" ship)
+  [ -z "$open" ] || fail "a repeated approval reopened the landing decision: $open"
+
+  # New work after that landing is a new wait that must be askable again.
+  printf '%s\n' "$wait" >> "$state/df-wait.status"
+  open=$(status_open_decisions "$state/df-wait.status" ship)
+  assert_contains "$open" "landing-approval" "a later draft handoff could not reopen the landing decision"
+  pass "the rendered landing wait opens and closes through the decision fold"
+}
+
+# The flag changes publishing contracts only: local-only, a forgejo project, a
+# gerrit project, and a registered pr=manual project keep byte-identical text.
+test_draft_first_leaves_other_contracts_alone() {
+  local armed plain off on
+  armed=$(df_home only)
+  plain=$(df_home only-plain plain)
+  df_compare() {  # <label> <mode> <forge> <pr>
+    off="$TMP_ROOT/df-off-$1.md"
+    on="$TMP_ROOT/df-on-$1.md"
+    FM_HOME="$plain" fm_dod_block "$2" df-other df-branch "$3" '' '' "$4" > "$off" \
+      || fail "$1: unarmed rendering failed"
+    FM_HOME="$armed" fm_dod_block "$2" df-other df-branch "$3" '' '' "$4" > "$on" \
+      || fail "$1: armed rendering failed"
+    cmp -s "$off" "$on" || fail "$1: the draft-first flag changed a non-draft contract"
+  }
+  df_compare local-only local-only '' ''
+  df_compare forgejo no-mistakes forgejo ''
+  df_compare gerrit no-mistakes gerrit ''
+  df_compare pr-manual no-mistakes '' manual
+  pass "draft-first leaves local-only, forgejo, gerrit, and pr=manual contracts unchanged"
+}
+
 test_scout_done_is_not_gated
 test_unpushed_ship_done_is_refused
 test_no_mistakes_prevalidation_done_is_not_gated
@@ -468,6 +576,9 @@ test_non_done_lines_are_not_gated
 test_fenced_and_indented_captain_lines_are_not_intent
 test_pr_based_dod_draft_check_uses_gh_axi
 test_promotion_keeps_the_recorded_base_branch
+test_draft_first_contract_is_home_scoped
+test_draft_first_landing_wait_closes_once
+test_draft_first_leaves_other_contracts_alone
 
 # The launch role is the generated text a worker receives. It must keep the
 # skill name, so a session that registers the skill loads it by name, and must
