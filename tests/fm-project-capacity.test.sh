@@ -38,6 +38,7 @@ Exercise project capacity admission.
 
 # Definition of done
 Delivery contract: mode=no-mistakes
+Ship branch: chore/$2
 EOF
 }
 

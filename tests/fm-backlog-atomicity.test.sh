@@ -91,6 +91,7 @@ Verify the atomic backlog transition.
 
 # Definition of done
 Delivery contract: mode=no-mistakes
+Ship branch: chore/$id
 EOF
   done
 

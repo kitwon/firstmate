@@ -32,8 +32,8 @@
 # A GitLab merge request and a Gerrit change expose no comparable ref and record
 # no pr_head, so a task recording one always takes that warning path;
 # docs/architecture.md owns that fallback. Without pr=, compare the task's
-# immutable ship branch recorded in state/<id>.meta ("fm/<id>" for records
-# created before that field existed), or the worktree's checked-out branch when
+# immutable ship branch recorded in state/<id>.meta (fm_legacy_ship_branch for
+# records created before that field existed), or the worktree's checked-out branch when
 # that branch does not exist in the worktree. A recorded branch that is not a
 # valid git branch name is refused instead of taking that fallback, the same
 # refusal fm-merge-local.sh applies, so a corrupt meta record can never turn a
@@ -99,7 +99,11 @@ DEFAULT=$RECORDED_BASE
 [ -n "$DEFAULT" ] || DEFAULT=$(default_branch) || { echo "error: cannot determine default branch for $PROJ; expected origin/HEAD, main, or master" >&2; exit 1; }
 
 BRANCH=$(grep '^branch=' "$META" | cut -d= -f2- || true)
-[ -n "$BRANCH" ] || BRANCH="fm/$ID"
+if [ -z "$BRANCH" ]; then
+  # shellcheck source=bin/fm-dod-lib.sh
+  . "$SCRIPT_DIR/fm-dod-lib.sh"
+  BRANCH=$(fm_legacy_ship_branch "$ID")
+fi
 if ! git check-ref-format --branch "$BRANCH" >/dev/null 2>&1; then
   echo "error: task $ID has an invalid recorded ship branch '$BRANCH'" >&2
   exit 1

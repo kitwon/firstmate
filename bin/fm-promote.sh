@@ -83,7 +83,7 @@ CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
 
 MODE=
 YOLO=
-BRANCH_PREFIX=fm/
+BRANCH_PREFIX=$(fm_default_ship_branch_prefix)
 MODE_SET=0
 YOLO_SET=0
 FORGE=none
