@@ -13,9 +13,12 @@
 # For local-only tasks, the first accepted done head is latched as exactly one
 # local_done_head= full commit id in the live task metadata. Observing done again
 # never changes that identity. Revised work needs a new task/approval record.
-# The optional third argument is the task's full ship-branch name (a project's
-# registered prefix may replace the legacy `fm/` one); it defaults to `fm/<task-id>`
-# and is the immutable task branch rendered in every delivery contract.
+# The optional third argument is the task's full ship-branch name. A project's
+# registered prefix, or a task-appropriate semantic prefix, replaces the generic
+# fallback from fm_default_ship_branch_prefix; omitted, the branch is that
+# fallback plus the task id. It is the immutable task branch rendered in every
+# delivery contract. fm_legacy_ship_branch is only for records that predate a
+# recorded branch and still use `fm/<task-id>`.
 # The optional fifth argument is the task's base branch from bin/fm-brief.sh
 # --base-branch; empty means the repository default. A named base is the branch
 # the worker starts from, never pushes to, and targets with its pull request, and
@@ -226,6 +229,19 @@ fm_pr_text_valid() {  # <pr> <mode> <forge> <caller>
   return 0
 }
 
+# Generic prefix for a new ship whose project registers no branch= override
+# and whose caller omits --branch-prefix. Intake still passes a task-appropriate
+# semantic prefix (AGENTS.md section 7); this is only the fallback.
+fm_default_ship_branch_prefix() {
+  printf '%s\n' 'chore/'
+}
+
+# Ship branch for a record or brief created before the branch was recorded, and
+# for resume, landing, and cleanup when branch= is absent. New tasks do not use it.
+fm_legacy_ship_branch() {  # <task-id>
+  printf '%s\n' "fm/$1"
+}
+
 # The task branch prefix: <branch> with its trailing <task-id> removed, or
 # empty when the branch is the bare task id or does not end with it.
 fm_ship_branch_prefix() {  # <branch> <task-id>
@@ -275,7 +291,7 @@ fm_brief_base_branches() {  # <brief>
 
 fm_ship_rule_one() {  # <no-mistakes|direct-PR|local-only> <task-id> [branch] [<forge>] [<base>]
   local mode=$1 id=$2 forge=${4:-none} base=${5:-}
-  local branch=${3:-fm/$id} target='the default branch'
+  local branch=${3:-$(fm_default_ship_branch_prefix)$id} target='the default branch'
   fm_forge_valid_for_mode "$forge" "$mode" fm_ship_rule_one || return 1
   fm_base_branch_valid "$base" "$mode" "$forge" fm_ship_rule_one || return 1
   [ -z "$base" ] || target="the base branch \`$base\` or the default branch"
@@ -537,7 +553,7 @@ EOF
 
 fm_dod_block() {  # <mode> <task-id> [branch] [<forge>] [<base>] [<consent>] [<pr>]
   local mode=$1 id=$2 forge=${4:-none} base=${5:-} consent=${6:-} pr=${7:-auto}
-  local branch=${3:-fm/$id} pr_base='' nm_base='' base_q contract_forge='' contract_consent='' forge_cli=gh-axi draft_check adapter
+  local branch=${3:-$(fm_default_ship_branch_prefix)$id} pr_base='' nm_base='' base_q contract_forge='' contract_consent='' forge_cli=gh-axi draft_check adapter
   fm_forge_valid_for_mode "$forge" "$mode" fm_dod_block || return 1
   fm_base_branch_valid "$base" "$mode" "$forge" fm_dod_block || return 1
   fm_pr_text_valid "$pr" "$mode" "$forge" fm_dod_block || return 1

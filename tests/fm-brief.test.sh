@@ -1464,10 +1464,9 @@ test_base_branch_is_rendered_and_bounded() {
   pass "fm-brief.sh: --base-branch records the base, targets the PR at it, and is refused where no PR carries it"
 }
 
-# (a) An unregistered/default project - no --branch-prefix passed at all - must
-# keep every generated ship mode's branch on the legacy "fm/<task-id>" name, byte
-# for byte, so every existing firstmate installation is unaffected.
-test_ship_branch_prefix_defaults_to_legacy_fm() {
+# (a) An unregistered/default project - no --branch-prefix passed at all -
+# uses the generic chore/<task-id> fallback, not a historical fm/ name.
+test_ship_branch_prefix_defaults_to_generic_chore() {
   local home id mode brief
   home="$TMP_ROOT/branch-prefix-default-home"
   mkdir -p "$home/data"
@@ -1477,10 +1476,12 @@ test_ship_branch_prefix_defaults_to_legacy_fm() {
     FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode "$mode" >/dev/null 2>&1
     brief="$home/data/$id/brief.md"
     # shellcheck disable=SC2016  # literal backticks around the branch name must stay unexpanded
-    assert_grep "\`git checkout -b fm/$id --\`" "$brief" \
-      "$mode: omitting --branch-prefix must still create the legacy fm/<task-id> branch"
+    assert_grep "\`git checkout -b chore/$id --\`" "$brief" \
+      "$mode: omitting --branch-prefix must create the generic chore/<task-id> branch"
+    assert_no_grep "fm/$id" "$brief" \
+      "$mode: omitting --branch-prefix left the historical fm/ prefix in place"
   done
-  pass "fm-brief.sh: --branch-prefix omitted defaults every ship mode to fm/<task-id>"
+  pass "fm-brief.sh: --branch-prefix omitted defaults every ship mode to chore/<task-id>"
 }
 
 # (b) + (c) A configured override must replace "fm/" everywhere the branch name is
@@ -1725,7 +1726,7 @@ test_wait_no_turns_absent_keeps_the_previous_brief
 test_inbox_guidance_explains_marked_body_terminator
 test_home_brief_include_is_appended_last
 test_base_branch_is_rendered_and_bounded
-test_ship_branch_prefix_defaults_to_legacy_fm
+test_ship_branch_prefix_defaults_to_generic_chore
 test_ship_branch_prefix_override_is_consistent_across_modes
 test_ship_branch_prefix_empty_override_yields_bare_task_id
 test_branch_prefix_is_refused_where_it_does_not_apply

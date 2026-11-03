@@ -43,13 +43,16 @@
 #   loud one-line deviation notice is printed and the spawn continues.
 #   no-mistakes-prod-only is a registry policy rather than a task mode and is
 #   refused as a flag value.
-#   --branch-prefix is the optional prefix selected at intake for this ship's
-#   immutable branch, defaulting to "fm/". It must agree with the branch recorded
-#   in the brief, and is refused on scouts, secondmates, and relaunches. When the
-#   selected branch does not match the project's registered prefix, the spawn
-#   prints a one-line deviation notice and continues, because the registered
-#   prefix is the captain's standing preference and the brief agreement above
-#   already guarantees the worker's instructions match the branch.
+#   --branch-prefix is the prefix selected at intake for this ship's immutable
+#   branch. Omitted, it is fm_default_ship_branch_prefix (chore/). It must agree
+#   with the branch recorded in the brief, and is refused on scouts, secondmates,
+#   and relaunches. A brief with no ship-branch line warns and continues when the
+#   selected branch is fm_legacy_ship_branch (fm/<id>) or the generic fallback;
+#   any other prefix is refused until the brief records the branch. When the
+#   selected branch does not match a registered prefix other than that generic
+#   fallback, the spawn prints a one-line deviation notice and continues, because
+#   the registered prefix is the captain's standing preference and the brief
+#   agreement above already guarantees the worker's instructions match the branch.
 #   --base-branch is the optional branch selected at intake for a ship or scout
 #   to start from and target instead of origin's default branch. A fresh launch
 #   resets its pooled copy to origin/<branch>, refusing when the project has no
@@ -968,7 +971,7 @@ EFFORT=
 BACKEND_ARG=
 MODE=
 YOLO=
-BRANCH_PREFIX=fm/
+BRANCH_PREFIX=$(fm_default_ship_branch_prefix)
 TRACEPARENT_ARG=
 HARNESS_SET=0
 MODEL_SET=0
@@ -2468,7 +2471,7 @@ if [ "$RELAUNCH" -eq 1 ]; then
   UPSTREAM_CONSENT=$(fm_meta_get "$RELAUNCH_META" upstream_consent)
   if [ "$KIND" = ship ]; then
     BRANCH=$(fm_meta_get "$RELAUNCH_META" branch)
-    [ -n "$BRANCH" ] || BRANCH="fm/$ID"
+    [ -n "$BRANCH" ] || BRANCH=$(fm_legacy_ship_branch "$ID")
     if ! git check-ref-format --branch "$BRANCH" >/dev/null 2>&1; then
       echo "error: task $ID has an invalid recorded ship branch '$BRANCH'" >&2
       exit 1
@@ -4186,18 +4189,18 @@ if [ "$KIND" = ship ]; then
       echo "error: branch mismatch for $ID: the brief says branch=$BRIEF_BRANCH but this spawn selected branch=$BRANCH" >&2
       exit 1
     }
-  elif [ "$BRANCH" != "fm/$ID" ]; then
+  elif [ "$RELAUNCH" -eq 1 ]; then
     # A relaunch's branch comes from the meta record (--branch-prefix is refused
     # there), so a promoted scout whose brief never carried a Ship branch line
     # must relaunch on that recorded branch rather than be refused.
-    if [ "$RELAUNCH" -eq 1 ]; then
-      echo "warning: $BRIEF records no ship branch; relaunching on the task's recorded branch $BRANCH" >&2
-    else
-      echo "error: $BRIEF records no ship branch; regenerate it with --branch-prefix before spawning $BRANCH" >&2
-      exit 1
-    fi
-  else
+    echo "warning: $BRIEF records no ship branch; relaunching on the task's recorded branch $BRANCH" >&2
+  elif [ "$BRANCH" = "$(fm_legacy_ship_branch "$ID")" ]; then
     echo "warning: $BRIEF records no ship branch; defaulting to legacy branch $BRANCH" >&2
+  elif [ "$BRANCH" = "$(fm_default_ship_branch_prefix)$ID" ]; then
+    echo "warning: $BRIEF records no ship branch; defaulting to generic fallback branch $BRANCH" >&2
+  else
+    echo "error: $BRIEF records no ship branch; regenerate it with --branch-prefix before spawning $BRANCH" >&2
+    exit 1
   fi
   if [ -z "$BRIEF_MODE" ]; then
     echo "warning: $BRIEF records no delivery contract line (scaffolded before ship briefs recorded one); launching on the explicit --mode $MODE - confirm its definition of done matches" >&2
@@ -4311,13 +4314,14 @@ if [ "$KIND" = ship ]; then
     echo "notice: $ID ships mode=$MODE while the standing posture for $PROJ_NAME is $STANDING_MODE - less rigor than the captain's standing posture; proceed only on a current explicit captain instruction or an intake judgment you can state" >&2
   fi
   # The registered ship-branch prefix (bin/fm-project-mode.sh) is the captain's
-  # answer to "should this project's branches read as firstmate-authored", so a
-  # spawn that ships the legacy fm/ prefix past a registered override is
-  # announced, not refused: the brief-vs-spawn agreement above already
-  # guarantees the worker's instructions match the branch this spawn selected.
+  # standing per-project prefix. The generic fallback is not a registered
+  # override, so a task-appropriate semantic prefix does not announce. A spawn
+  # that misses a real override is announced, not refused: the brief-vs-spawn
+  # agreement above already guarantees the worker's instructions match the
+  # branch this spawn selected.
   STANDING_BRANCH=$("$FM_ROOT/bin/fm-project-mode.sh" --branch-prefix "$PROJ_NAME" 2>/dev/null) || STANDING_BRANCH=
-  if [ "$BRANCH" != "$STANDING_BRANCH$ID" ]; then
-    echo "notice: $ID ships branch=$BRANCH while $PROJ_NAME registers the ship-branch prefix '$STANDING_BRANCH' (branch $STANDING_BRANCH$ID) - the task's branch and PR will read as firstmate-authored; proceed only on a current explicit captain instruction or an intake judgment you can state" >&2
+  if [ "$STANDING_BRANCH" != "$(fm_default_ship_branch_prefix)" ] && [ "$BRANCH" != "$STANDING_BRANCH$ID" ]; then
+    echo "notice: $ID ships branch=$BRANCH while $PROJ_NAME registers the ship-branch prefix '$STANDING_BRANCH' (branch $STANDING_BRANCH$ID); proceed only on a current explicit captain instruction or an intake judgment you can state" >&2
   fi
 fi
 

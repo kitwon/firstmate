@@ -121,7 +121,7 @@ default_branch() {
 }
 
 BRANCH=$(grep '^branch=' "$META" | cut -d= -f2- || true)
-[ -n "$BRANCH" ] || BRANCH="fm/$ID"
+[ -n "$BRANCH" ] || BRANCH=$(fm_legacy_ship_branch "$ID")
 if ! git check-ref-format --branch "$BRANCH" >/dev/null 2>&1; then
   echo "error: task $ID has an invalid recorded ship branch '$BRANCH'" >&2
   exit 1

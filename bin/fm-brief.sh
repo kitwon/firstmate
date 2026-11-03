@@ -47,18 +47,20 @@
 #                the configured merge authority approves, firstmate merges to local main
 # no-mistakes-prod-only is a registry policy, not a task mode; resolve it to one of
 # the three concrete modes at intake before calling this script.
-# --branch-prefix <prefix> optionally overrides the ship branch's "fm/" prefix, so
-# the resolved branch is "<prefix><task-id>" instead of the default "fm/<task-id>".
-# Pass an empty prefix ("--branch-prefix ''") for a bare "<task-id>" branch, or a
-# conventional prefix such as "fix/" - useful for a third-party project that does
-# not use this tooling and should not see an "fm/"-branded branch or PR. Defaults
-# to "fm/" when omitted, so every existing installation's branch names are
-# unchanged. Like --mode, this script never reads data/projects.md for it: the
-# registry's optional "branch=<prefix>" annotation (bin/fm-project-mode.sh's
-# header owns that format and its --branch-prefix query) is the captain's
-# standing per-project preference, and firstmate resolves it per task at intake
-# and passes the explicit flag. Refused on --scout and --secondmate: a scout
-# makes no branch and a charter is not a delivery contract.
+# --branch-prefix <prefix> is the ship branch prefix. The resolved branch is
+# "<prefix><task-id>". Pass an empty prefix ("--branch-prefix ''") for a bare
+# "<task-id>" branch. Pass a project's registered branch= value when it has one,
+# including empty. Otherwise pass a task-appropriate semantic prefix: feat/,
+# fix/, docs/, refactor/, test/, chore/, perf/, build/, ci/, or revert/.
+# A ticket stays in the task id (fix/SL-123-description), not in a second flag.
+# Omitted, the prefix is fm_default_ship_branch_prefix (chore/), the generic
+# fallback, not a standing choice for every task. Pass fm/ only when the branch
+# already uses that historical prefix. Like --mode, this script never reads
+# data/projects.md for it: the registry's optional "branch=<prefix>" annotation
+# (bin/fm-project-mode.sh's header owns that format and its --branch-prefix
+# query) is the captain's standing per-project preference, and firstmate resolves
+# it per task at intake and passes the explicit flag. Refused on --scout and
+# --secondmate: a scout makes no branch and a charter is not a delivery contract.
 # --base-branch <branch> starts the task from origin's <branch> instead of the
 # repository default, for work that belongs on a named integration, feature, or
 # release branch. It writes a "Base branch: <branch>" line under `# Setup`, which
@@ -221,7 +223,7 @@ HERDR_LAB=0
 NO_PROJECTS=0
 MODE=
 MODE_SET=0
-BRANCH_PREFIX=fm/
+BRANCH_PREFIX=$(fm_default_ship_branch_prefix)
 BRANCH_PREFIX_SET=0
 BASE_BRANCH=
 BASE_BRANCH_SET=0

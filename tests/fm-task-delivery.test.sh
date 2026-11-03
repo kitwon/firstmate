@@ -44,12 +44,18 @@ make_home() {  # <name> [<registry-line>...]
   printf '%s\n' "$home|$projects/proj|$fakebin"
 }
 
-write_brief() {  # <home> <id> [<recorded-mode>]
-  local home=$1 id=$2 mode=${3:-}
+write_brief() {  # <home> <id> [<recorded-mode>] [<ship-branch|none>]
+  local home=$1 id=$2 mode=${3:-} ship=${4-}
   mkdir -p "$home/data/$id"
+  if [ -n "$mode" ] && [ -z "$ship" ]; then
+    ship="chore/$id"
+  fi
   {
     printf 'You are a crewmate.\n\n# Task\n## Captain'\''s intent\nExercise the delivery contract.\n\n## Firstmate spec\nVerify the selected delivery behavior.\n\n# Definition of done\n'
     [ -z "$mode" ] || printf 'Delivery contract: mode=%s\n' "$mode"
+    if [ -n "$ship" ] && [ "$ship" != none ]; then
+      printf 'Ship branch: %s\n' "$ship"
+    fi
   } > "$home/data/$id/brief.md"
 }
 
@@ -152,7 +158,7 @@ EOF
 
   # A brief scaffolded before the contract line existed warns once and continues.
   write_brief "$home" delivery-legacy-b3
-  out=$(run_spawn "$home" "$fakebin" delivery-legacy-b3 "$proj" claude --mode local-only --yolo off)
+  out=$(run_spawn "$home" "$fakebin" delivery-legacy-b3 "$proj" claude --mode local-only --yolo off --branch-prefix fm/)
   assert_contains "$out" "records no delivery contract line" "a legacy brief did not warn about its missing contract"
   assert_not_contains "$out" "delivery mismatch" "a legacy brief was treated as a mismatch"
   pass "fm-spawn: the brief's recorded mode and the spawn's explicit mode must agree"
@@ -400,7 +406,7 @@ STUB
       "$mode: promoted worker was not told to verify its repository root"
     assert_grep "If either does not resolve to the worktree you were launched in, stop and escalate to firstmate" "$payload" \
       "$mode: promoted worker was not told to stop for any wrong worktree"
-    assert_grep "git checkout -b fm/$id --" "$payload" \
+    assert_grep "git checkout -b chore/$id --" "$payload" \
       "$mode: promoted worker was not told to leave the scratch base for its ship branch"
     assert_grep "## Captain's intent" "$payload" \
       "$mode: promoted worker did not receive the Captain's intent subsection"
@@ -1665,7 +1671,7 @@ EOF
     "the refusal did not name both sides of the drift"
   assert_absent "$home/state/branch-agree-a1.meta" "the refused spawn still recorded a task"
 
-  write_brief "$home" branch-agree-a2 no-mistakes
+  write_brief "$home" branch-agree-a2 no-mistakes none
   out=$(run_spawn "$home" "$fakebin" branch-agree-a2 "$proj" claude --mode no-mistakes --yolo off --branch-prefix contrib/)
   status=$?
   [ "$status" -ne 0 ] || fail "a non-legacy spawn on a brief that records no ship branch was accepted"
@@ -1673,11 +1679,17 @@ EOF
     "the legacy-brief refusal did not name the repair"
   assert_absent "$home/state/branch-agree-a2.meta" "the refused legacy-brief spawn still recorded a task"
 
-  write_brief "$home" branch-agree-a3 no-mistakes
-  out=$(run_spawn "$home" "$fakebin" branch-agree-a3 "$proj" claude --mode no-mistakes --yolo off)
+  write_brief "$home" branch-agree-a3 no-mistakes none
+  out=$(run_spawn "$home" "$fakebin" branch-agree-a3 "$proj" claude --mode no-mistakes --yolo off --branch-prefix fm/)
   assert_contains "$out" "records no ship branch; defaulting to legacy branch fm/branch-agree-a3" \
-    "the legacy default did not warn about the brief's missing ship branch"
-  assert_not_contains "$out" "branch mismatch" "the legacy default was refused as drift"
+    "the historical fm/ prefix did not warn about the brief's missing ship branch"
+  assert_not_contains "$out" "branch mismatch" "the historical fm/ prefix was refused as drift"
+  write_brief "$home" branch-agree-a3b no-mistakes none
+  out=$(run_spawn "$home" "$fakebin" branch-agree-a3b "$proj" claude --mode no-mistakes --yolo off)
+  assert_contains "$out" "records no ship branch; defaulting to generic fallback branch chore/branch-agree-a3b" \
+    "omitting --branch-prefix did not warn that the brief has no ship branch"
+  assert_not_contains "$out" "branch mismatch" "the generic fallback was refused as drift"
+  assert_not_contains "$out" "legacy branch" "the generic fallback was described as the historical fm/ branch"
 
   FM_HOME="$home" "$BRIEF" branch-agree-a4 proj --mode no-mistakes --branch-prefix fix/ >/dev/null \
     || fail "a second fix/-prefixed brief should scaffold"
@@ -1708,12 +1720,9 @@ EOF
   pass "fm-spawn: the brief must carry the spawn's selected ship branch, and the selection is validated before anything is created"
 }
 
-# The registered ship-branch prefix exists so a third-party project's branches and
-# PRs do not read as firstmate-authored, but a spawn that deviates from it breaks
-# no contract: the brief-vs-spawn agreement above already guarantees the worker's
-# instructions match the branch this spawn selected. So the deviation is announced
-# and the spawn proceeds, while matching the registry (or its fm/ default) stays
-# quiet.
+# A registered ship-branch prefix is the project's own convention. A spawn that
+# misses it is announced and proceeds. Matching the registry, or shipping the
+# generic chore/ fallback when the project registers no override, stays quiet.
 test_spawn_notices_a_ship_branch_against_the_registry_prefix() {
   local rec home proj fakebin out
   rec=$(make_home prefix-deviation "- proj [no-mistakes branch=fix/] - fixture (added 2026-01-01)")
@@ -1723,10 +1732,10 @@ EOF
 
   write_brief "$home" prefix-dev-a1 no-mistakes
   out=$(run_spawn "$home" "$fakebin" prefix-dev-a1 "$proj" claude --mode no-mistakes --yolo off)
-  assert_contains "$out" "ships branch=fm/prefix-dev-a1 while proj registers the ship-branch prefix 'fix/'" \
-    "no deviation notice for shipping the legacy prefix past a registered override"
-  assert_contains "$out" "will read as firstmate-authored" \
-    "the deviation notice did not name the cost of the drift"
+  assert_contains "$out" "ships branch=chore/prefix-dev-a1 while proj registers the ship-branch prefix 'fix/'" \
+    "no deviation notice for shipping the generic fallback past a registered override"
+  assert_contains "$out" "proceed only on a current explicit captain instruction" \
+    "the deviation notice did not name the required authority"
 
   FM_HOME="$home" "$BRIEF" prefix-dev-a2 proj --mode no-mistakes --branch-prefix fix/ >/dev/null \
     || fail "a fix/-prefixed brief should scaffold"
@@ -1922,8 +1931,8 @@ test_authorized_intent_keeps_words_without_composed_address
 test_spawn_refreshes_legacy_worker_roles
 
 # --branch-prefix never touches the default "<mode> <yolo>" output (order- and
-# presence-independent), defaults an unregistered/plain project to the legacy
-# "fm/" prefix, and resolves an empty override to "" for a bare <task-id> branch.
+# presence-independent), defaults an unregistered/plain project to the generic
+# "chore/" prefix, and resolves an empty override to "" for a bare <task-id> branch.
 test_project_mode_resolves_branch_prefix() {
   local home out err
   home="$TMP_ROOT/project-mode-branch/home"
@@ -1941,10 +1950,10 @@ EOF
   [ "$out" = "no-mistakes off" ] || fail "an unrelated branch=<prefix> query must not change the default mode/yolo output (got '$out')"
 
   out=$(FM_HOME="$home" "$PROJECT_MODE" --branch-prefix plainproj 2>/dev/null)
-  [ "$out" = "fm/" ] || fail "a project with no branch= annotation must resolve to the legacy fm/ prefix (got '$out')"
+  [ "$out" = "chore/" ] || fail "a project with no branch= annotation must resolve to the generic chore/ prefix (got '$out')"
 
   out=$(FM_HOME="$home" "$PROJECT_MODE" --branch-prefix modeonlyproj 2>/dev/null)
-  [ "$out" = "fm/" ] || fail "a project registering only a mode must still default to fm/ (got '$out')"
+  [ "$out" = "chore/" ] || fail "a project registering only a mode must still default to chore/ (got '$out')"
 
   out=$(FM_HOME="$home" "$PROJECT_MODE" overrideproj 2>/dev/null)
   [ "$out" = "direct-PR off" ] || fail "a branch= token must not leak into the mode/yolo output (got '$out')"
@@ -1957,21 +1966,21 @@ EOF
   [ "$out" = "contrib/" ] || fail "a registered branch= override before the mode was not resolved (got '$out')"
 
   out=$(FM_HOME="$home" "$PROJECT_MODE" --branch-prefix bareproj 2>/dev/null)
-  [ "$out" = "" ] || fail "an empty branch= override must resolve to an empty prefix, not fm/ (got '$out')"
+  [ "$out" = "" ] || fail "an empty branch= override must resolve to an empty prefix, not chore/ (got '$out')"
 
   out=$(FM_HOME="$home" "$PROJECT_MODE" typomodeproj 2>/dev/null)
   [ "$out" = "no-mistakes off" ] || fail "a typo'd mode's registered branch leaked into the mode/yolo output (got '$out')"
   err=$(FM_HOME="$home" "$PROJECT_MODE" typomodeproj 2>&1 >/dev/null)
   assert_contains "$err" "unknown mode" "a typo'd mode with a branch override stopped warning"
   out=$(FM_HOME="$home" "$PROJECT_MODE" --branch-prefix typomodeproj 2>/dev/null)
-  [ "$out" = "fm/" ] || fail "an unknown mode must fall back to the legacy fm/ prefix, not trust the malformed entry's branch (got '$out')"
+  [ "$out" = "chore/" ] || fail "an unknown mode must fall back to the generic chore/ prefix, not trust the malformed entry's branch (got '$out')"
 
   out=$(FM_HOME="$home" "$PROJECT_MODE" --branch-prefix never-registered 2>/dev/null)
-  [ "$out" = "fm/" ] || fail "an unregistered project must default its branch prefix to fm/ (got '$out')"
+  [ "$out" = "chore/" ] || fail "an unregistered project must default its branch prefix to chore/ (got '$out')"
 
   out=$(FM_HOME="$TMP_ROOT/project-mode-branch/no-registry-home" "$PROJECT_MODE" --branch-prefix anyproj 2>/dev/null)
-  [ "$out" = "fm/" ] || fail "an absent registry must default the branch prefix to fm/ (got '$out')"
-  pass "fm-project-mode: --branch-prefix resolves order-independently and defaults to the legacy fm/ prefix"
+  [ "$out" = "chore/" ] || fail "an absent registry must default the branch prefix to chore/ (got '$out')"
+  pass "fm-project-mode: --branch-prefix resolves order-independently and defaults to the generic chore/ prefix"
 }
 
 test_ship_spawn_requires_a_valid_delivery_contract

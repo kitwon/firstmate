@@ -393,6 +393,9 @@ $intent
 
 ## Firstmate spec
 Exercise the spawn behavior under test.
+
+# Definition of done
+Ship branch: chore/$id
 EOF
 }
 
