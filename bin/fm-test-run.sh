@@ -1648,6 +1648,10 @@ families_for_changed_path() {
       printf '%s\n' "__script__:fm-quota-magpie.test.sh"
       printf '%s\n' "__script__:fm-dispatch-resolve.test.sh"
       ;;
+    bin/fm-magpie-quota.sh)
+      printf '%s\n' "__script__:fm-quota-magpie.test.sh"
+      printf '%s\n' "__script__:fm-dispatch-resolve.test.sh"
+      ;;
     bin/fm-procevent-quota.sh)
       printf '%s\n' "__script__:fm-procevent-quota.test.sh"
       ;;
