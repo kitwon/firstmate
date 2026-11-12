@@ -17,7 +17,9 @@ That approval is the only thing that starts validation: relay it with `fm-send -
 The run keeps its ordinary steps and publishes through that same draft, and the worker marks it ready only after the run passes and the checks are green before reporting `done: PR <url> checks green`, which then takes the ordinary path below with unchanged merge authority.
 A later commit or rebase is a new head that needs its own run, so a further ready report follows another approval rather than reviving the closed one.
 `bin/fm-dod-lib.sh` owns the named-head gate on that ready signal: a ship `done:` whose named head exists only in the worker's disposable copy is not ready (`bin/fm-crew-state.sh` reports blocked, `bin/fm-pr-check.sh` refuses to register, and a secondmate does not publish that done upstream).
-That blocked reading is the gate working, not a stuck worker, so steer the worker on the commit the refusal names rather than waiting.
+Of those readers only `bin/fm-pr-check.sh` fetches the copy's remotes before it decides, and a no-mistakes pipeline pushes from its own clone, so a no-mistakes ready signal can read blocked until that registration has run: register it before steering.
+A refusal that says it could not refresh a remote decided on the last-known refs, so retry it once that remote is reachable.
+Otherwise that blocked reading is the gate working, not a stuck worker, so steer the worker on the commit the refusal names rather than waiting.
 A `forge=external` task reports `done [at=<epoch>]: review <url> uploaded for review` instead: run `bin/fm-review-check.sh <id> <review url>` rather than `bin/fm-pr-check.sh`, which arms no merge watch, then always escalate the review URL to the captain whatever the yolo setting, because firstmate can neither observe nor perform its approval or merge.
 A direct-PR worker pushes that commit to its PR branch, and a local-only worker commits it on its ship branch.
 A no-mistakes worker re-validates it with /no-mistakes so the pipeline stays the one publisher; it never pushes from its copy.
