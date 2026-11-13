@@ -30,8 +30,8 @@ Complex means any of these:
 
 A screenshot, one staging check, or several commands do not make a task complex.
 
-A complex task gets two assigned workstreams, a developer and a verifier, each with its own brief naming the same revision.
-Every other task keeps one developer and one acceptance assignment.
+A complex task splits development and verification into two assigned workstreams, each with its own brief naming the same revision, so the verifier owns each surface's evidence check from the start.
+Every other task keeps one developer and takes the acceptance assignment below as its single outside check.
 
 ## Assign development
 
@@ -41,17 +41,18 @@ The brief also names the evidence directory under `data/<id>/`, where `result.md
 
 ## Assign acceptance
 
-Every task ends with a verdict from a different worker or agent, assigned through the same dispatch path.
+Every task ends with a verdict from a different worker or agent.
+For a complex task that is the verifier workstream; otherwise assign acceptance through the ordinary dispatch path.
 A secondmate whose scope fits may accept, and it opens no pull request of its own.
 The assignment names the frozen revision, the task's `result.md`, and the evidence the task produced.
-The agent runs `knock-off` at that revision, records its own acceptance rows there, and judges the evidence the developer actually supplied rather than general code quality.
+The agent runs `knock-off` at that revision and records its own verdict on the evidence the developer actually supplied, rather than judging general code quality.
 The verdict is `pass`, `fail`, or `blocked`, and a failure returns to the developer as finding id, reproduction, and expectation.
 A changed revision voids the verdict, so a fix earns a fresh acceptance on the new head.
 
 ## Check delivery
 
 The developer proves these on the published head before declaring ready, and acceptance rechecks them.
-- the repository's `AI Code review` pipeline ran on this head, or the repository has none and the task records that from repository evidence,
+- the repository's actual `AI Code review` pipeline ran on this head, or the repository has none and the task records that from repository evidence,
 - every `AI Bot` finding on this head is dispositioned, either fixed on this branch with the fixing commit and a recheck, or answered with the reason it does not apply, and `pr` owns the `### AI review` section that records each one,
 - a visual claim carries a rendered snapshot of the running page, not an HTTP status.
 
@@ -65,7 +66,7 @@ Merge authority, merge tools, and the project's yolo posture are unchanged, so t
 
 ## Boundaries
 
-Intake, capacity, delivery mode, publication, and merge authority stay with AGENTS.md section 7, and supervision stays with section 8.
+Intake, capacity, delivery mode, publication, validation, and merge authority stay with AGENTS.md section 7, and supervision stays with section 8.
 This skill adds roles and evidence requirements and changes no authority.
 It adds no pipeline, daemon, review pass, second pull request, or automatic merge.
-The developer never accepts its own evidence, and it never spawns the acceptance agent itself.
+The developer never accepts its own evidence and never assigns the agent that does.
