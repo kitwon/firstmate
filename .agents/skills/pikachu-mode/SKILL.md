@@ -46,17 +46,19 @@ For a complex task that is the verifier workstream; otherwise assign acceptance 
 A secondmate whose scope fits may accept, and it opens no pull request of its own.
 The assignment names the frozen revision, the task's `result.md`, and the evidence the task produced.
 The agent runs `knock-off` at that revision and records its own verdict on the evidence the developer actually supplied, rather than judging general code quality.
-The verdict is `pass`, `fail`, or `blocked`, and a failure returns to the developer as finding id, reproduction, and expectation.
+The verdict is `pass`, `fail`, `blocked`, or `inconclusive` under `knock-off`'s own definitions, and a failure returns to the developer as finding id, reproduction, and expectation.
 A changed revision voids the verdict, so a fix earns a fresh acceptance on the new head.
 
 ## Check delivery
 
 The developer proves these on the published head before declaring ready, and acceptance rechecks them.
 - the repository's actual `AI Code review` pipeline ran on this head, or the repository has none and the task records that from repository evidence,
-- every `AI Bot` finding on this head is dispositioned, either fixed on this branch with the fixing commit and a recheck, or answered with the reason it does not apply, and `pr` owns the `### AI review` section that records each one,
+- every `AI Bot` finding on this head is dispositioned, either fixed on this branch with the fixing commit and a recheck, or answered with the reason it does not apply, and the pull request owner answers its thread,
 - a visual claim carries a rendered snapshot of the running page, not an HTTP status.
 
-`knock-off` owns how those rows are supplied and `pr` owns the body the pull request needs.
+A check that needs a browser runs in a session the task owns and closes only that session and its pages when the check ends, leaving the user's browser, other tasks' live sessions, and every authentication profile untouched.
+
+`knock-off` owns how those rows are supplied and `pr` owns the pull request body from its current template, which is the only list of sections the body carries.
 A task that publishes no pull request marks the pull request rows not applicable and keeps the evidence rows.
 
 ## Land after acceptance
