@@ -650,6 +650,9 @@
       "audience": "operator-current"
     },
     {
+      "path": "skills/show-me-the-works/SKILL.md",
+      "audience": "public-product"
+    },    {
       "path": "skills/stow/SKILL.md",
       "audience": "public-product"
     },
@@ -695,6 +698,10 @@
     },
     {
       "path": ".agents/skills/validation-supervision/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/pikachu-mode/SKILL.md",
       "audience": "agent-runtime"
     }
   ]
