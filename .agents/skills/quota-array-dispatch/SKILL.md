@@ -95,8 +95,10 @@ Magpie names the subscription provider inside the model, so a route identifies i
 Match that exact provider to the snapshot's row of the same name and never to a similarly named sibling, a different account, or a native quota-axi row.
 Provider identification and account identification are separate facts.
 One subscription under that provider is that route's real windows.
-A provider Magpie reports more than once names separate accounts that no route field distinguishes, so that provider stays unmeasured with its `note` saying why, and every subscription stays in `providers[].subscriptions` beside its own windows, resets, freshness, balance, and read error.
-Inspect those subscriptions rather than one merged figure, and remember an unknown routing verdict is not a failed quota read.
+A provider Magpie reports more than once names several accounts of one subscription that no route field distinguishes.
+Its row publishes a provider-level estimate instead of one account's measured quota: each window's remaining percentage is the mean across those accounts, its reset is the earliest reported, and the row's `note` says it is an average, while every subscription stays in `providers[].subscriptions` beside its own windows, resets, freshness, balance, and read error.
+An unreadable account, differing window sets, or a window without a percentage leaves the provider unmeasured with a note naming that case, and an unknown routing verdict is not a failed quota read.
+Magpie's `agy-cli` provider is the Antigravity CLI: its `Gemini · …` windows bound it at `all_models`, and its `Claude & GPT · …` windows publish scope `claude_gpt`, which a route reads only by declaring that `quota_scope`.
 Magpie's `last` and `lastServedAt` describe recent gateway use, never which subscription served a request.
 A Magpie route is ranked by `selection.spendPriority` when `bin/fm-magpie-quota.sh` publishes that scalar from quota-axi's pace calculator at the floor in `bin/fm-quota-axi-lib.sh`.
 The helper's header owns which window labels have a trusted cycle and which inputs stay unknown.

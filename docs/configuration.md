@@ -2339,7 +2339,10 @@ It never introduces candidates outside the matched rule or its existing default 
 
 The [shared quota library](../bin/fm-quota-axi-lib.sh) accepts schema 5 and schema 6 and implements the [account-matching contract](../.agents/skills/quota-array-dispatch/SKILL.md#1-eligibility).
 
-A `provider: magpie` profile names its Magpie subscription provider inside the model, as `magpie/<provider>/<model>`, or as `<provider>/<model>` when the profile already declares `provider: magpie`; that exact provider supplies the route's windows, and a provider Magpie reports more than once stays unmeasured instead of borrowing a sibling's windows.
+A `provider: magpie` profile names its Magpie subscription provider inside the model, as `magpie/<provider>/<model>`, or as `<provider>/<model>` when the profile already declares `provider: magpie`; that exact provider supplies the route's windows, never a sibling's.
+A provider Magpie reports more than once is several accounts of one subscription, so its row publishes a provider-level estimate: each window's remaining percentage is the mean across those accounts and its reset is the earliest reported, the row's `note` says it is an average, and every account stays in `providers[].subscriptions`.
+An unreadable account, differing window sets, or a window without a remaining percentage leaves that provider unmeasured, with a note naming which case it hit.
+Magpie's `agy-cli` provider is the Antigravity CLI: its `Gemini · …` windows bound the provider at `all_models`, and its `Claude & GPT · …` windows publish scope `claude_gpt`, which a route reads only by declaring that `quota_scope`.
 
 - An expanded provider with no matching account row leaves the candidate eligible but unranked.
 - Known applicable rows from a provider with partial quota semantics remain rankable; rows whose own status is not known remain unrankable.

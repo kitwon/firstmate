@@ -57,8 +57,8 @@ jq -e '
     ([.. | strings] | index("hidden-one")) == null and
     ([.. | strings] | index("hidden-two")) == null
 ' "$TMP_ROOT/out.json" >/dev/null \
-  || fail "one provider with two subscriptions must stay unknown, without a login or an invented rank"
-pass "two subscriptions under one provider stay unknown, without a login or an invented rank"
+  || fail "one provider with two subscriptions must stay unknown, without a margin derived from one account"
+pass "two subscriptions under one provider stay unmeasured when an account could not be read"
 jq -e '
   ([.providers[] | select(.provider == "grok")][0].quotaSemantics) as $g
   | ([.providers[] | select(.provider == "opencode-go")][0].quotaSemantics) as $o
@@ -109,6 +109,91 @@ jq -e '
 ' "$TMP_ROOT/partial-out.json" >/dev/null \
   || fail "an unreadable window or failed read must stay visible uncertainty"
 pass "a read error or an unreadable window stays visible uncertainty, not healthy allowance"
+
+# A provider Magpie reports more than once is several accounts of one
+# subscription, so the row publishes their mean per window: sum divided by
+# count. Each account stays in `subscriptions`, the row says it averaged, and
+# the earliest reset keeps the figure conservative.
+cat > "$TMP_ROOT/average.json" <<'JSON'
+[
+  {"provider":"codex","kind":"subscription","plan":"team","readAt":"2026-10-30T06:00:00Z","windows":[
+    {"name":"5 hours","used":40,"remaining":60,"resetsAt":"2026-10-30T10:00:00Z"},
+    {"name":"7 days","used":10,"remaining":90,"resetsAt":"2026-11-04T00:00:00Z"}
+  ]},
+  {"provider":"codex","kind":"subscription","plan":"team","readAt":"2026-10-30T06:05:00Z","windows":[
+    {"name":"5 hours","used":80,"remaining":20,"resetsAt":"2026-10-30T09:00:00Z"},
+    {"name":"7 days","used":30,"remaining":70,"resetsAt":"2026-11-06T00:00:00Z"}
+  ]}
+]
+JSON
+"$TOOL" "$TMP_ROOT/average.json" > "$TMP_ROOT/average-out.json" \
+  || fail "a provider with two readable subscriptions must normalize: $(cat "$TMP_ROOT/err" 2>/dev/null)"
+fm_quota_json_valid < "$TMP_ROOT/average-out.json" || fail "an averaged magpie snapshot must validate as schema 6"
+jq -e '
+  ([.providers[] | select(.provider == "codex")][0]) as $x
+  | $x.quotaSemantics.status == "known"
+    and ($x.note | test("^2 subscriptions named codex were averaged"))
+    and [$x.quotaSemantics.effectiveAvailability[]
+         | [.scope, .window, .effectivePercentRemaining, .resetsAt]] ==
+        [["all_models", "5 hours", 40, "2026-10-30T09:00:00Z"],
+         ["all_models", "7 days", 80, "2026-11-04T00:00:00Z"]]
+    and [$x.windows[] | [.name, .remaining]] == [["5 hours", 40], ["7 days", 80]]
+    and ($x.subscriptions | length) == 2
+    and [$x.subscriptions[].readAt] == ["2026-10-30T06:00:00Z", "2026-10-30T06:05:00Z"]
+' "$TMP_ROOT/average-out.json" >/dev/null \
+  || fail "two accounts under one provider must publish their per-window mean with each account preserved"
+pass "two accounts under one provider publish the per-window mean and keep both accounts"
+
+# Mismatched or incomplete evidence is never averaged into a figure that reads
+# like measured quota: the provider stays unmeasured and the note names why.
+cat > "$TMP_ROOT/incomplete.json" <<'JSON'
+[
+  {"provider":"claude","readAt":"2026-10-30T06:00:00Z","windows":[{"name":"5 hours","used":10,"remaining":90}]},
+  {"provider":"claude","readAt":"2026-10-30T06:01:00Z","windows":[{"name":"7 days","used":10,"remaining":90}]},
+  {"provider":"cursor","readAt":"2026-10-30T06:00:00Z","windows":[{"name":"Month","used":10,"remaining":90}]},
+  {"provider":"cursor","readAt":"2026-10-30T06:01:00Z","windows":[{"name":"Month","used":10}]}
+]
+JSON
+"$TOOL" "$TMP_ROOT/incomplete.json" > "$TMP_ROOT/incomplete-out.json" \
+  || fail "an incomplete duplicate provider must still normalize"
+jq -e '
+  ([.providers[] | select(.provider == "claude")][0]) as $c
+  | ([.providers[] | select(.provider == "cursor")][0]) as $u
+  | $c.quotaSemantics.status == "unknown"
+    and ($c.note | test("publish different window sets"))
+    and $u.quotaSemantics.status == "unknown"
+    and ($u.note | test("window publishes no remaining percentage"))
+' "$TMP_ROOT/incomplete-out.json" >/dev/null \
+  || fail "a mismatched or incomplete duplicate must stay unmeasured with an explicit note"
+pass "mismatched window sets and a missing percentage stay unmeasured, never averaged"
+
+# Magpie's agy-cli is the Antigravity CLI: its Gemini windows are the provider's
+# bound, while its Claude & GPT windows are a separate product a route must opt
+# into, so an empty Claude & GPT allowance cannot block a Gemini route.
+cat > "$TMP_ROOT/agy.json" <<'JSON'
+[
+  {"provider":"agy-cli","kind":"subscription","plan":"Google AI Pro","readAt":"2026-10-30T06:00:00Z","windows":[
+    {"name":"Gemini · 7 days","used":10,"remaining":90},
+    {"name":"Gemini · 5 hours","used":40,"remaining":60},
+    {"name":"Claude & GPT · 7 days","used":100,"remaining":0},
+    {"name":"Claude & GPT · 5 hours","used":100,"remaining":0}
+  ]}
+]
+JSON
+"$TOOL" "$TMP_ROOT/agy.json" > "$TMP_ROOT/agy-out.json" \
+  || fail "an agy-cli subscription must normalize"
+jq -e '
+  ([.providers[] | select(.provider == "agy-cli")][0]) as $a
+  | $a.quotaSemantics.status == "known"
+    and ($a | has("note") | not)
+    and [$a.quotaSemantics.effectiveAvailability[] | [.window, .scope]] ==
+        [["Gemini · 7 days", "all_models"],
+         ["Gemini · 5 hours", "all_models"],
+         ["Claude & GPT · 7 days", "claude_gpt"],
+         ["Claude & GPT · 5 hours", "claude_gpt"]]
+' "$TMP_ROOT/agy-out.json" >/dev/null \
+  || fail "agy-cli must publish Gemini as the provider bound and Claude & GPT as its own scope"
+pass "agy-cli publishes Gemini at all_models and Claude & GPT at claude_gpt"
 
 mkdir "$TMP_ROOT/bin"
 cat > "$TMP_ROOT/bin/magpie" <<'SH'
@@ -166,8 +251,8 @@ else
   {"provider":"cursor","readAt":"2030-01-08T00:00:00Z","windows":[
     {"name":"Month","used":10,"remaining":90,"resetsAt":"2030-02-01T00:00:00Z"}
   ]},
-  {"provider":"codex","user":"hidden-a","windows":[{"name":"5 hours","used":1,"remaining":99,"resetsAt":"2030-01-08T05:00:00Z"}],"readAt":"2030-01-08T00:00:00Z"},
-  {"provider":"codex","user":"hidden-b","windows":[{"name":"5 hours","used":1,"remaining":99,"resetsAt":"2030-01-08T05:00:00Z"}],"readAt":"2030-01-08T00:00:00Z"},
+  {"provider":"codex","user":"hidden-a","windows":[{"name":"5 hours","used":60,"remaining":40,"resetsAt":"2030-01-08T02:30:00Z"}],"readAt":"2030-01-08T00:00:00Z"},
+  {"provider":"codex","user":"hidden-b","windows":[{"name":"5 hours","used":80,"remaining":20,"resetsAt":"2030-01-08T03:00:00Z"}],"readAt":"2030-01-08T00:00:00Z"},
   {"provider":"deepseek","windows":[
     {"name":"5 hours","used":0,"remaining":100,"resetsAt":"2030-01-08T05:00:00Z"}
   ]}
@@ -201,15 +286,20 @@ JSON
     and ($k.effectiveAvailability[0].selection | has("spendPriority") | not)
     and $u.effectiveAvailability[0].selection.status == "unknown"
     and ($u.effectiveAvailability[0].selection | has("spendPriority") | not)
-    and $x.quotaSemantics.status == "unknown"
-    and ($x | has("selection") | not)
+    and $x.quotaSemantics.status == "known"
+    and ($x.note | test("^2 subscriptions named codex were averaged"))
+    and $x.quotaSemantics.effectiveAvailability[0].effectivePercentRemaining == 30
+    and $x.quotaSemantics.effectiveAvailability[0].resetsAt == "2030-01-08T02:30:00Z"
+    and $x.quotaSemantics.effectiveAvailability[0].selection.status == "known"
+    and $x.quotaSemantics.effectiveAvailability[0].selection.spendPriority == -0.8
     and ([.. | strings] | index("hidden-a")) == null
     and $d.effectiveAvailability[0].selection.status == "unknown"
     and ($d.effectiveAvailability[0].selection | has("spendPriority") | not)
   ' "$TMP_ROOT/ranked-out.json" >/dev/null \
     || fail "headroom, the long-period bound, exhaustion, expiry, and missing clocks must stay distinct"
   pass "a fuller short window does not outrank the higher spendPriority, and a month bound stays visible"
-  pass "exhausted, expired, unlabeled month, ambiguous accounts, and a missing readAt stay unranked"
+  pass "expired, unlabeled month, and a missing readAt stay unranked"
+  pass "two accounts of one provider average into a measured, rankable row"
 fi
 
 printf '# all fm-quota-magpie tests passed\n'

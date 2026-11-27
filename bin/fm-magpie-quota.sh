@@ -14,11 +14,27 @@
 # with one row per Magpie subscription provider, keyed `default`. A Magpie
 # route names that provider as magpie/<real provider>/<model>, so a row
 # supplies exactly that route's windows. A provider Magpie reports once binds
-# its real windows; a provider it reports more than once cannot be attributed
-# to the subscription that would serve a request, so that provider stays
-# unknown and unmeasured. `subscriptions` always preserves every subscription's
-# provider, plan, windows, balance, read errors and freshness as observational
-# evidence, without logins or nested usage/reset history.
+# its real windows. A provider it reports more than once names several accounts
+# that no route field distinguishes, so the row publishes a provider-level
+# estimate: each window's remaining percentage is the mean across those
+# accounts (sum divided by count), its reset is the earliest one reported, and
+# its `note` says the figure is an average.
+# The estimate is never presented as one account's measured quota:
+# `subscriptions` always preserves every subscription's provider, plan,
+# windows, balance, read errors and freshness as observational evidence,
+# without logins or nested usage/reset history.
+# Missing or mismatched evidence stays explicit instead of averaged away: one
+# unreadable subscription, one window set that differs between accounts, or one
+# window without a remaining percentage leaves the whole provider unmeasured
+# with a note naming which case it hit.
+#
+# Magpie's `agy-cli` row is the Antigravity CLI subscription. Its `Gemini · …`
+# windows bound that provider at all_models, while its `Claude & GPT · …`
+# windows are a separate product published at scope claude_gpt so they never
+# bound a Gemini route; a Claude/GPT route opts into them with `quota_scope`.
+# shortcut: such a route is still additionally bounded by the provider's Gemini
+# windows, give each product its own provider row if a Claude/GPT Magpie route
+# ever needs its own bound.
 #
 # Magpie names each subscription by `provider` and `user` and gives windows, but
 # no stable account id and no field saying which subscription served a model.
@@ -27,7 +43,8 @@
 # When quota-axi meets the floor in bin/fm-quota-axi-lib.sh, a measured
 # subscription gets that package's computeWindowPace, computeEffectiveRunway,
 # and summarizeEffectiveSelection.
-# The labels "5 hours" and "7 days" use that package's 18000s and 604800s
+# The labels "5 hours" and "7 days", and the same labels after a product
+# prefix such as "Gemini · 5 hours", use that package's 18000s and 604800s
 # durations.
 # "Month" and "month_total" get a calendar-month start only for opencode-go and
 # kimi, the providers whose own adapters already derive one.
@@ -37,7 +54,8 @@
 # A native quota-axi row is not one of these accounts.
 # FM_MAGPIE_DISABLE_PACE=1 skips the calculator.
 # FM_QUOTA_PACE_MODULE names pace.js when a test must pin it.
-# command -v quota-axi is used when it meets the floor; otherwise a Volta image
+# command -v quota-axi is used when it meets the floor, including a package
+# manager shim that sits above the installed package; otherwise a Volta image
 # package of quota-axi is used when that one meets the floor.
 #
 # Diagnostics stay on stderr, apart from the snapshot. This script does not
@@ -69,6 +87,27 @@ normalize='
         .windows |= map(fields(["name", "used", "remaining", "resetsAt"]))
       else . end;
   def measured: (.remaining | type) == "number" and .remaining >= 0 and .remaining <= 100;
+  def window_name: (.name // "");
+  # The provider agy-cli is the Antigravity CLI: Gemini windows bound it, while
+  # Claude & GPT windows are a separately metered product scope.
+  def window_scope($provider; $name):
+    if $provider == "agy-cli" and ($name | startswith("Claude & GPT · ")) then "claude_gpt"
+    else "all_models" end;
+  def rounded: ((. * 1000000) | round) / 1000000;
+  # The provider-level mean for a provider Magpie reports more than once. Each
+  # window is averaged over every account so the figure is the sum divided by
+  # the count, and the earliest reported reset keeps it conservative.
+  def averaged($subs):
+    [ $subs[0].windows[]? | window_name ] as $names |
+    [ $names[] as $name |
+      [ $subs[] | (.windows // [])[] | select(window_name == $name) ] as $w |
+      { name: $name,
+        remaining: (($w | map(.remaining) | add) / ($w | length) | rounded),
+        resetsAt: ([$w[] | .resetsAt | select(type == "string")] as $r
+          | if ($r | length) == ($w | length) then ($r | min) else null end) }
+      + (if all($w[]; (.used | type) == "number")
+         then {used: (($w | map(.used) | add) / ($w | length) | rounded)} else {} end)
+    ];
   # One unknown all_models bound plus the note that says why. A window Magpie
   # could not read stays uncertainty rather than an implied healthy allowance.
   def unmeasured($provider; $subs; $note):
@@ -78,22 +117,38 @@ normalize='
   def measured_row($provider; $subs; $windows):
     {provider: $provider, accountKey: "default", subscriptions: $subs,
      quotaSemantics: {status: "known", effectiveAvailability: ($windows | map(
-       {scope: "all_models", status: "known", effectivePercentRemaining: .remaining,
+       {scope: window_scope($provider; .name), status: "known", effectivePercentRemaining: .remaining,
         runway: {status: "unknown"}}
        + (if .name then {window: .name} else {} end)
-       + (if .resetsAt then {resetsAt: .resetsAt} else {} end)))}};
+       + (if .resetsAt then {resetsAt: .resetsAt} else {} end)))}}
+    + (if ($subs | length) > 1 then
+         {note: "\($subs | length) subscriptions named \($provider) were averaged: each window remaining percentage is the mean across \($subs | length) accounts, and its reset is the earliest reported",
+          windows: $windows}
+       else {} end);
   def provider_row:
     (.[0].provider) as $p | (map(evidence) | sort_by(tojson)) as $subs |
+    ($subs | length) as $n |
     [$subs[] | .windows[]? | select(measured)] as $windows |
-    if ($subs | length) != 1 then
-      unmeasured($p; $subs; "\($subs | length) subscriptions named \($p); magpie reports no stable account id")
-    elif (($subs[0].error // "") | length) > 0 then
-      unmeasured($p; $subs; "subscription read failed: \($subs[0].error)")
+    ([$subs[] | ((.error // "") | select(length > 0))] | first) as $error |
+    ([$subs[] | [(.windows // [])[] | window_name] | sort] | unique) as $sets |
+    (($subs[0].windows // []) | length) as $count |
+    if $n == 1 then
+      if ($error // "") != "" then
+        unmeasured($p; $subs; "subscription read failed: \($error)")
+      elif ($windows | length) == 0 then
+        unmeasured($p; $subs; "subscription publishes no percentage window")
+      elif ($windows | length) != $count then
+        unmeasured($p; $subs; "a subscription window publishes no remaining percentage")
+      else measured_row($p; $subs; $windows) end
+    elif ($error // "") != "" then
+      unmeasured($p; $subs; "\($n) subscriptions named \($p): a subscription read failed: \($error)")
+    elif ($sets | length) != 1 then
+      unmeasured($p; $subs; "\($n) subscriptions named \($p) publish different window sets")
     elif ($windows | length) == 0 then
-      unmeasured($p; $subs; "subscription publishes no percentage window")
-    elif ($windows | length) != (($subs[0].windows // []) | length) then
-      unmeasured($p; $subs; "a subscription window publishes no remaining percentage")
-    else measured_row($p; $subs; $windows) end;
+      unmeasured($p; $subs; "\($n) subscriptions named \($p) publish no percentage window")
+    elif ($windows | length) != ($count * $n) then
+      unmeasured($p; $subs; "\($n) subscriptions named \($p): a subscription window publishes no remaining percentage")
+    else measured_row($p; $subs; averaged($subs)) end;
   if type != "array" then error("magpie quota is not an array") else . end |
   [ .[] | select(type == "object") | select(family_id(.provider // "")) ] as $rows |
   if ($rows | length) == 0 then error("magpie quota has no provider rows") else . end |
@@ -133,12 +188,12 @@ fm_magpie_pace_module() {
   bin=$(command -v quota-axi 2>/dev/null || true)
   if [ -n "$bin" ]; then
     bin=$(readlink -f "$bin" 2>/dev/null || true)
-    if [ -n "$bin" ] && [ -f "$bin" ]; then
-      root=$(CDPATH='' cd -P "$(dirname "$bin")/../.." 2>/dev/null && pwd -P) || root=''
-      if [ -n "$root" ] && pace_from_root "$root"; then
+    for root in "$(dirname "$bin")/../.." "$(dirname "$bin")/../quota-axi" "$(dirname "$bin")/.."; do
+      root=$(CDPATH='' cd -P "$root" 2>/dev/null && pwd -P) || continue
+      if pace_from_root "$root"; then
         return 0
       fi
-    fi
+    done
   fi
   volta=${VOLTA_HOME:-$HOME/.volta}
   pace_from_root "$volta/tools/image/packages/quota-axi/lib/node_modules/quota-axi"
@@ -172,8 +227,14 @@ function clockOk(value) {
   return typeof value === "string" && Number.isFinite(Date.parse(value));
 }
 
+function cycleLabel(name) {
+  const at = name.lastIndexOf(" · ");
+  return at >= 0 ? name.slice(at + 3) : name;
+}
+
 function builtWindow(provider, window, index) {
   const name = typeof window.name === "string" ? window.name : "";
+  const label = cycleLabel(name);
   const built = {
     id: `${name}#${index}`,
     percentRemaining: window.remaining,
@@ -182,9 +243,9 @@ function builtWindow(provider, window, index) {
   if (typeof window.resetsAt === "string" && window.resetsAt !== "") {
     built.resetsAt = window.resetsAt;
   }
-  if (name === "5 hours") built.windowSeconds = FIVE_HOURS_SECONDS;
-  else if (name === "7 days") built.windowSeconds = WEEK_SECONDS;
-  else if (calendarMonthProviders.has(provider) && (name === "Month" || name === "month_total") && built.resetsAt) {
+  if (label === "5 hours") built.windowSeconds = FIVE_HOURS_SECONDS;
+  else if (label === "7 days") built.windowSeconds = WEEK_SECONDS;
+  else if (calendarMonthProviders.has(provider) && (label === "Month" || label === "month_total") && built.resetsAt) {
     const startsAt = calendarMonthsBefore(built.resetsAt, 1);
     if (startsAt) built.startsAt = startsAt;
   }
@@ -206,17 +267,24 @@ function annotate(provider) {
     return provider;
   }
   const sub = Array.isArray(provider.subscriptions) ? provider.subscriptions[0] : undefined;
-  const raw = Array.isArray(sub?.windows) ? sub.windows : [];
-  const generatedAt = clockOk(sub?.readAt) ? sub.readAt : undefined;
-  const paced = raw.map((window, index) => {
+  const windows = Array.isArray(provider.windows) ? provider.windows : Array.isArray(sub?.windows) ? sub.windows : [];
+  // Several averaged accounts share one provider row: the oldest read time is
+  // the row's age, and only an account-wide bound supplies the scalar.
+  const subs = Array.isArray(provider.subscriptions) ? provider.subscriptions : [];
+  const stamps = subs.map((entry) => entry?.readAt).filter(clockOk);
+  const generatedAt = subs.length > 0 && stamps.length === subs.length ? [...stamps].sort()[0] : undefined;
+  const scopes = semantics.effectiveAvailability.map((row) => row.scope);
+  const paced = windows.map((window, index) => {
     const built = builtWindow(provider.provider, window, index);
     return {
       ...built,
+      scope: scopes[index],
       pace: generatedAt ? computeWindowPace(built, generatedAt) : { status: "unknown", reason: "invalid_cycle" },
     };
   });
-  const selection = generatedAt
-    ? summarizeEffectiveSelection(paced)
+  const bound = paced.filter((window) => window.scope === "all_models" || window.scope === "all_products");
+  const selection = generatedAt && bound.length > 0
+    ? summarizeEffectiveSelection(bound)
     : { status: "unknown" };
   const published = selection.status === "known" && typeof selection.spendPriority === "number"
     ? { status: "known", spendPriority: selection.spendPriority }

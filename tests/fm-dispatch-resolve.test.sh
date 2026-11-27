@@ -2161,7 +2161,7 @@ assert_contains "$out" '  reason: no rankable eligible candidate' "a route witho
 assert_contains "$out" 'candidate: pi:magpie/opencode-go/glm-5.3-flash  provider=magpie  scope=all_models  remaining=90%  spendPriority=-  runway=unknown  bounds=all_models[5 hours]:90%/unknown,all_models[7 days]:60%/unknown  -> eligible, unranked: magpie publishes no spendPriority at all_models (5 hours): not rankable: disclosed uncertainty' "the full route form supplies its own provider's real windows"
 assert_contains "$out" 'candidate: pi:opencode-go/glm-5.3-pro  provider=magpie  scope=all_models  remaining=90%' "the relative route form reads the same provider row"
 assert_contains "$out" 'candidate: pi:magpie/grok/grok-4.7  provider=magpie  scope=all_models  remaining=0%  spendPriority=-  runway=unknown  -> not eligible: 0% remaining at all_models (7 days)' "an exhausted applicable window blocks the route"
-assert_contains "$out" 'candidate: pi:magpie/codex/gpt-6-luna  provider=magpie  scope=all_models  remaining=-%  spendPriority=-  runway=unknown  -> eligible, unranked: provider magpie route codex unmeasured (unknown): 2 subscriptions named codex; magpie reports no stable account id: disclosed uncertainty' "two subscriptions under one provider identify no single account"
+assert_contains "$out" 'candidate: pi:magpie/codex/gpt-6-luna  provider=magpie  scope=all_models  remaining=-%  spendPriority=-  runway=unknown  -> eligible, unranked: provider magpie route codex unmeasured (unknown): 2 subscriptions named codex: a subscription read failed: Unauthorized: disclosed uncertainty' "an unreadable account keeps the whole provider unmeasured"
 assert_contains "$out" 'candidate: pi:magpie/ocg/deepseek-v4.1-flash  provider=magpie  -> eligible, unranked: provider magpie route ocg not in the quota snapshot: disclosed uncertainty' "a route reads its exact provider, never a sibling with a similar name"
 assert_not_contains "$out" 'candidate: pi:magpie/ocg/deepseek-v4.1-flash  provider=magpie  scope=' "a sibling row never becomes another route's evidence"
 assert_contains "$out" 'candidate: pi:magpie/deepseek/deepseek-v4.1-flash  provider=magpie  scope=all_models  remaining=-%  spendPriority=-  runway=unknown  -> eligible, unranked: provider magpie route deepseek unmeasured (unknown): subscription publishes no percentage window: disclosed uncertainty' "a balance-only provider stays unmeasured, not exhausted"
@@ -2270,6 +2270,10 @@ unset FM_MAGPIE_DISABLE_PACE
 if [ -z "$("$ROOT/bin/fm-magpie-quota.sh" --print-pace-module)" ]; then
   pass "magpie spendPriority dispatch cases blocked: no quota-axi pace module at or above the floor"
 else
+  # The fake quota-axi on this PATH must answer quota reads, so pin the real
+  # pace module the reader just resolved instead of letting it search again.
+  pace_module=$("$ROOT/bin/fm-magpie-quota.sh" --print-pace-module)
+  export FM_QUOTA_PACE_MODULE="$pace_module"
   cat > "$TMP_ROOT/magpie-rank-rules.json" <<'JSON'
 {
   "rules": [
@@ -2325,11 +2329,66 @@ JSON
   assert_contains "$out" 'candidate: pi:magpie/opencode-go/glm-5.3-flash  provider=magpie  scope=all_models  remaining=100%  spendPriority=-2.1126  runway=through_reset  bounds=all_models[5 hours]:100%/through_reset,all_models[7 days]:100%/unknown,all_models[Month]:2%/projected_exhaustion' "the almost empty month stays visible beside the full short window"
   assert_contains "$out" 'candidate: pi:magpie/grok/grok-4.7  provider=magpie  scope=all_models  remaining=20%  spendPriority=0.2315  runway=projected_exhaustion' "the lower short-window headroom keeps the higher scalar"
   assert_contains "$out" 'candidate: pi:magpie/claude/claude-opus  provider=magpie  scope=all_models  remaining=0%  spendPriority=-  runway=exhausted_now  -> not eligible: runway exhausted_now at all_models (7 days)' "an exhausted window is not a route"
-  assert_contains "$out" 'candidate: pi:magpie/codex/gpt-6-luna  provider=magpie  scope=all_models  remaining=-%  spendPriority=-  runway=unknown  -> eligible, unranked: provider magpie route codex unmeasured (unknown): 2 subscriptions named codex; magpie reports no stable account id: disclosed uncertainty' "two accounts stay unranked"
+  assert_contains "$out" 'candidate: pi:magpie/codex/gpt-6-luna  provider=magpie  scope=all_models  remaining=-%  spendPriority=-  runway=unknown  -> eligible, unranked: provider magpie route codex unmeasured (unknown): 2 subscriptions named codex: a subscription read failed: Unauthorized: disclosed uncertainty' "an unreadable account keeps the averaged provider unmeasured"
   assert_contains "$out" 'candidate: pi:magpie/kimi/kimi-k2  provider=magpie  scope=all_models  remaining=90%  spendPriority=-  runway=unknown  -> eligible, unranked: spendPriority unknown at all_models (7 days): not rankable: disclosed uncertainty' "an expired reset stays unknown rather than a healthy rank"
   assert_not_contains "$out" 'one@example' "a ranked read still does not copy a login"
   [ ! -e "$LOG/quota-axi.calls" ] || fail "magpie ranking must not call the quota-axi CLI"
   pass "magpie routes rank by spendPriority, keep the month visible, and veto exhaustion"
+
+  # Several accounts of one Magpie subscription average into one provider-level
+  # estimate, and its agy-cli Gemini windows stay separate from the Claude & GPT
+  # product a route must opt into. The estimate reaches the classifier as a
+  # numeric figure with its note attached, never as one account's measured quota.
+  cat > "$TMP_ROOT/magpie-average-rules.json" <<'JSON'
+{
+  "rules": [
+    {
+      "when": "Router work.",
+      "use": [
+        { "harness": "pi", "model": "magpie/codex/gpt-6-luna", "provider": "magpie", "effort": "xhigh" },
+        { "harness": "pi", "model": "magpie/agy-cli/gemini-4-hydrogen", "provider": "magpie", "effort": "medium" },
+        { "harness": "pi", "model": "magpie/agy-cli/claude-opus", "provider": "magpie", "effort": "medium", "quota_scope": "claude_gpt" }
+      ]
+    }
+  ]
+}
+JSON
+  cat > "$TMP_ROOT/magpie-average.json" <<'JSON'
+[
+  {"provider":"codex","user":"one@example","readAt":"2030-01-08T00:00:00Z","windows":[
+    {"name":"5 hours","used":60,"remaining":40,"resetsAt":"2030-01-08T02:30:00Z"}
+  ]},
+  {"provider":"codex","user":"two@example","readAt":"2030-01-08T00:00:00Z","windows":[
+    {"name":"5 hours","used":80,"remaining":20,"resetsAt":"2030-01-08T03:00:00Z"}
+  ]},
+  {"provider":"agy-cli","readAt":"2030-01-08T00:00:00Z","windows":[
+    {"name":"Gemini · 7 days","used":10,"remaining":90,"resetsAt":"2030-01-14T00:00:00Z"},
+    {"name":"Gemini · 5 hours","used":40,"remaining":60,"resetsAt":"2030-01-08T04:00:00Z"},
+    {"name":"Claude & GPT · 7 days","used":100,"remaining":0,"resetsAt":"2030-01-14T00:00:00Z"},
+    {"name":"Claude & GPT · 5 hours","used":100,"remaining":0,"resetsAt":"2030-01-08T04:00:00Z"}
+  ]}
+]
+JSON
+  cp "$TMP_ROOT/magpie-average-rules.json" "$RULES"
+  reset_log
+  export MAGPIE_CALLS="$LOG/magpie.calls" MAGPIE_FIXTURE="$TMP_ROOT/magpie-average.json" MAGPIE_ADAPTER_CALLS="$LOG/magpie-adapter.calls"
+  TYPESAFE_API_KEY=$KEY run code out err "$BRIEF"
+  expect_code 0 "$code" "an averaged magpie route exits 0"
+  assert_contains "$out" '  profile: --harness '\''pi'\'' --model '\''magpie/agy-cli/gemini-4-hydrogen'\''' "the gemini route ranks on its own windows"
+  assert_contains "$out" 'candidate: pi:magpie/codex/gpt-6-luna  provider=magpie  scope=all_models  remaining=30%  spendPriority=-0.8' "two accounts average into one provider-level figure"
+  assert_contains "$out" '  note=2 subscriptions named codex were averaged' "the averaged figure carries the note that says so"
+  assert_contains "$out" 'candidate: pi:magpie/agy-cli/gemini-4-hydrogen  provider=magpie  scope=all_models  remaining=90%  spendPriority=0.3038' "the gemini route ranks on its provider row"
+  assert_contains "$out" 'bounds=all_models[Gemini · 7 days]:90%/through_reset,all_models[Gemini · 5 hours]:60%/projected_exhaustion  -> eligible' "only the Gemini windows bound the gemini route"
+  gemini_line=$(printf '%s\n' "$out" | grep 'candidate: pi:magpie/agy-cli/gemini-4-hydrogen' || true)
+  [ -n "$gemini_line" ] || fail "the gemini agy-cli route must appear as a candidate"
+  case "$gemini_line" in
+    *"Claude & GPT"*) fail "an empty Claude and GPT window must not bound the gemini route" ;;
+  esac
+  assert_contains "$out" 'candidate: pi:magpie/agy-cli/claude-opus  provider=magpie  scope=claude_gpt' "a declared quota_scope reads its own product row"
+  assert_contains "$out" '-> not eligible: runway exhausted_now at claude_gpt' "the opted-in Claude and GPT row blocks its own route"
+  assert_not_contains "$out" 'one@example' "an averaged provider still does not copy a login"
+  assert_not_contains "$out" 'two@example' "the second account login stays out of the decision too"
+  pass "duplicate subscriptions average into a noted estimate, and agy-cli keeps Gemini separate from Claude and GPT"
 
   cat > "$TMP_ROOT/magpie-tie-rules.json" <<'JSON'
 {
@@ -2362,6 +2421,7 @@ JSON
   assert_contains "$out" '  reason: genuine spendPriority tie' "the tie is the spendPriority tie"
   assert_not_contains "$out" '  profile:' "a tie emits no profile"
   pass "a real magpie spendPriority tie escalates"
+  unset FM_QUOTA_PACE_MODULE
 fi
 cp "$BASE_RULES" "$RULES"
 
